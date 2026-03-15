@@ -1,23 +1,29 @@
 import os
 
 # ─── Bot settings ─────────────────────────────────────────────────────────────
-BOT_TOKEN = os.getenv("BOT_TOKEN", "")
+BOT_TOKEN    = os.getenv("BOT_TOKEN", "")
 DATABASE_URL = os.getenv("DATABASE_URL", "")
 
+# ─── Admins (mets ton Telegram user_id ici) ───────────────────────────────────
+# Pour trouver ton ID : envoie /start à @userinfobot sur Telegram
+ADMIN_IDS: list[int] = [
+    int(x) for x in os.getenv("ADMIN_IDS", "").split(",") if x.strip().isdigit()
+]
+
 # ─── Free tier limits (par jour) ──────────────────────────────────────────────
-FREE_DOWNLOADS_PER_DAY = 3
+FREE_DOWNLOADS_PER_DAY    = 3
 FREE_COMPRESSIONS_PER_DAY = 2
-FREE_MAX_FILE_SIZE_MB = 50
+FREE_MAX_FILE_SIZE_MB     = 50
 
 # ─── Premium limits ───────────────────────────────────────────────────────────
 PREMIUM_MAX_FILE_SIZE_MB = 500
 
 # ─── Pricing ──────────────────────────────────────────────────────────────────
-STARS_PRICE_WEEKLY = 50      # 50 Telegram Stars
-STARS_PRICE_MONTHLY = 150    # 150 Telegram Stars
+STARS_PRICE_WEEKLY  = 50    # 50 Telegram Stars
+STARS_PRICE_MONTHLY = 150   # 150 Telegram Stars
 
-TON_PRICE_WEEKLY = 0.5       # 0.5 TON
-TON_PRICE_MONTHLY = 1.5      # 1.5 TON
+TON_PRICE_WEEKLY  = 0.5    # 0.5 TON
+TON_PRICE_MONTHLY = 1.5    # 1.5 TON
 
 TON_WALLET = os.getenv("TON_WALLET_ADDRESS", "TON_WALLET_ICI")
 
@@ -28,8 +34,7 @@ DOWNLOAD_PATH = "/tmp/mediabot"
 VIDEO_FORMATS = ["mp4", "mkv", "avi", "mov", "webm"]
 AUDIO_FORMATS = ["mp3", "aac"]
 
-# ─── Compression quality presets (CRF = Constant Rate Factor) ─────────────────
-# Valeurs CRF : 0 = qualité max, 51 = qualité min (libx264)
+# ─── Compression quality presets (CRF) ───────────────────────────────────────
 QUALITY_PRESETS = {
     "ultra":  {"crf": 18, "label": "🔵 Ultra  (qualité max, fichier lourd)"},
     "high":   {"crf": 23, "label": "🟢 Haute  (très bonne qualité)"},
