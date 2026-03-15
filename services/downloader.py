@@ -66,15 +66,15 @@ def _common_opts(platform: str | None, hook=None) -> dict:
         "fragment_retries": 5,
         "extractor_args": {
             "youtube": {
-                # tv + web contourne SABR sans PO Token ni cookies
-                "player_client": ["tv", "web"],
+                # android ne nécessite pas de JS ni de PO Token
+                "player_client": ["android", "android_vr"],
             }
         },
     }
 
     # YouTube : ne pas utiliser les cookies (cause SABR + PO Token errors)
     if platform == "youtube":
-        logger.info("YouTube : cookies désactivés (mode tv+web)")
+        logger.info("YouTube : cookies désactivés (mode android)")
     elif cookie_file:
         opts["cookiefile"] = cookie_file
         logger.info(f"Utilisation cookies {platform} : {cookie_file}")
@@ -83,16 +83,7 @@ def _common_opts(platform: str | None, hook=None) -> dict:
 
     # ── Options spécifiques TikTok ────────────────────────────────────────────
     if platform == "tiktok":
-        opts["http_headers"] = {
-            "User-Agent": (
-                "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) "
-                "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
-            ),
-            "Referer": "https://www.tiktok.com/",
-        }
-        opts["extractor_args"] = {
-            "tiktok": {"app_version": "36.1.3", "manifest_app_version": "2023601030"}
-        }
+        opts["impersonate"] = "chrome"
 
     if hook:
         opts["progress_hooks"] = [hook]
@@ -141,7 +132,6 @@ def download_media(url: str, format_type: str = "mp4", quality: str = "best") ->
 
     def hook(d):
         if d["status"] == "finished":
-            # Prendre le fichier fusionné final si disponible
             final = d.get("info_dict", {}).get("filepath") or d["filename"]
             downloaded.append(final)
             logger.info(f"Fichier téléchargé : {final}")
