@@ -43,7 +43,7 @@ async def start_download(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"Tu as utilisé tes {FREE_DOWNLOADS_PER_DAY} téléchargements gratuits aujourd'hui.\n"
             "Le quota se renouvelle chaque jour à minuit.\n\n"
             "💎 Passe en *Premium* pour un accès illimité !",
-            parse_mode="Markdown",
+            ,
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("💎 Voir les plans", callback_data="premium")],
                 [InlineKeyboardButton("⬅️ Retour",         callback_data="menu")],
@@ -63,7 +63,7 @@ async def start_download(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"📊 Quota aujourd'hui : *{remaining}*\n"
         f"📁 Taille max : *{max_size}MB*\n\n"
         "_Envoie /cancel pour annuler_",
-        parse_mode="MarkdownV2",
+        ,
     )
     return WAITING_LINK
 
@@ -126,7 +126,7 @@ async def handle_format(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if fmt == "mp3":
         context.user_data["quality"] = "720"
-        await query.edit_message_text("⏳ Téléchargement MP3 en cours...\n_Ça peut prendre quelques secondes._", parse_mode="Markdown")
+        await query.edit_message_text("⏳ Téléchargement MP3 en cours...\n_Ça peut prendre quelques secondes._", )
         await _do_download(query.message, context, query.from_user.id)
         return ConversationHandler.END
 
@@ -200,7 +200,7 @@ async def _do_download(message, context: ContextTypes.DEFAULT_TYPE, user_id: int
         except Exception:
             pass
 
-        safe_title = title[:100].replace("<", "").replace(">", "").replace("&", "and")
+        safe_title = "".join(c for c in title[:100] if c.isalnum() or c in " .,!?")
 
         with open(file_path, "rb") as f:
             if fmt == "mp3":
