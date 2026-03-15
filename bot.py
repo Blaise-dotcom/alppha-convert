@@ -38,8 +38,16 @@ def build_app() -> Application:
             dl.WAITING_FORMAT:  [CallbackQueryHandler(dl.handle_format,  pattern=r"^fmt_")],
             dl.WAITING_QUALITY: [CallbackQueryHandler(dl.handle_quality, pattern=r"^qual_")],
         },
-        fallbacks=[CommandHandler("cancel", menu.cancel)],
+        fallbacks=[
+            CommandHandler("cancel", menu.cancel),
+            # Permet de quitter la conversation en cliquant sur n'importe quel bouton menu
+            CallbackQueryHandler(menu.show_menu,   pattern="^menu$"),
+            CallbackQueryHandler(pay.show_plans,   pattern="^premium$"),
+            CallbackQueryHandler(menu.show_usage,  pattern="^usage$"),
+            CallbackQueryHandler(menu.show_help,   pattern="^help$"),
+        ],
         per_message=False,
+        allow_reentry=True,
     )
 
     # ── Conversation : Compression (maintenance) ─────────────────────────────
@@ -50,8 +58,13 @@ def build_app() -> Application:
             cp.WAITING_OUTPUT_FORMAT:  [CallbackQueryHandler(cp.handle_output_format,  pattern=r"^ofmt_")],
             cp.WAITING_QUALITY_PRESET: [CallbackQueryHandler(cp.handle_quality_preset, pattern=r"^qpre_")],
         },
-        fallbacks=[CommandHandler("cancel", menu.cancel)],
+        fallbacks=[
+            CommandHandler("cancel", menu.cancel),
+            CallbackQueryHandler(menu.show_menu,  pattern="^menu$"),
+            CallbackQueryHandler(pay.show_plans,  pattern="^premium$"),
+        ],
         per_message=False,
+        allow_reentry=True,
     )
 
     # ── Conversation : Admin ─────────────────────────────────────────────────
@@ -88,10 +101,8 @@ def build_app() -> Application:
     app.add_handler(PreCheckoutQueryHandler(pay.pre_checkout))
     app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, pay.successful_payment))
 
-    # ── TON : vérification hash ───────────────────────────────────────────────
-    app.add_handler(MessageHandler(filters.Regex(r"^tx:"), pay.verify_ton))
-
-    # ── USDT : vérification hash ──────────────────────────────────────────────
+    # ── TON / USDT : vérification hash (plus utilisé mais gardé) ─────────────
+    app.add_handler(MessageHandler(filters.Regex(r"^tx:"),   pay.verify_ton))
     app.add_handler(MessageHandler(filters.Regex(r"^usdt:"), pay.verify_usdt))
 
     return app
