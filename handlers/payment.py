@@ -13,7 +13,7 @@ from config import (
 logger = logging.getLogger(__name__)
 
 # ⬇️ Mets ici le @username de ton bot support
-SUPPORT_BOT_USERNAME = "alphabot_support"
+SUPPORT_BOT_USERNAME = "@AlphaConvertSupport_bot"
 
 PLANS = {
     "1month":  {"days": 30,    "label": "1 mois",   "stars": STARS_PRICE_1MONTH,  "ton": TON_PRICE_1MONTH,  "usdt": USDT_PRICE_1MONTH},
@@ -113,11 +113,12 @@ async def buy_stars(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["pending_stars_plan"] = plan_key
 
     await query.message.reply_invoice(
-        title=       f"Alpha Convert — Premium {plan['label']}",
-        description= f"Accès Premium {plan['label']} • Téléchargements illimités",
-        payload=     f"premium_{plan_key}_{query.from_user.id}",
-        currency=    "XTR",
-        prices=      [LabeledPrice(f"Premium {plan['label']}", int(plan["stars"]))],
+        title=          f"Alpha Convert — Premium {plan['label']}",
+        description=    f"Accès Premium {plan['label']} • Téléchargements illimités",
+        payload=        f"premium_{plan_key}_{query.from_user.id}",
+        provider_token= "",
+        currency=       "XTR",
+        prices=         [LabeledPrice(f"Premium {plan['label']}", int(plan["stars"]))],
     )
 
 
