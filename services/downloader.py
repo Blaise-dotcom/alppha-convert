@@ -12,11 +12,13 @@ os.makedirs(DOWNLOAD_PATH, exist_ok=True)
 
 def _write_cookie(b64_content: str, filename: str) -> str | None:
     if not b64_content:
+        logger.warning(f"Cookie vide pour {filename}, téléchargement sans cookie.")
         return None
     try:
         path = os.path.join("/tmp", filename)
         with open(path, "wb") as f:
             f.write(base64.b64decode(b64_content))
+        logger.info(f"Cookie écrit : {path}")
         return path
     except Exception as e:
         logger.warning(f"Cookie write failed ({filename}): {e}")
@@ -62,8 +64,12 @@ def get_video_info(url: str) -> dict:
     if PROXY_URL:
         opts["proxy"] = PROXY_URL
 
-    with yt_dlp.YoutubeDL(opts) as ydl:
-        info = ydl.extract_info(url, download=False)
+    try:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+    except Exception as e:
+        logger.error(f"get_video_info error [{platform}] {url}: {e}")
+        raise
 
     return {
         "title":     info.get("title", "Vidéo"),
@@ -82,13 +88,18 @@ def download_media(url: str, format_type: str = "mp4", quality: str = "best") ->
     tpl         = os.path.join(DOWNLOAD_PATH, "%(id)s_%(title).60s.%(ext)s")
     downloaded  = []
 
+    logger.info(f"Début téléchargement | platform={platform} | format={format_type} | quality={quality} | url={url}")
+
     def hook(d):
         if d["status"] == "finished":
             downloaded.append(d["filename"])
+            logger.info(f"Fichier téléchargé : {d['filename']}")
+        elif d["status"] == "error":
+            logger.error(f"Erreur hook yt-dlp : {d}")
 
     common = {
-        "quiet":            True,
-        "no_warnings":      True,
+        "quiet":            False,   # ← False pour voir les logs dans Railway
+        "no_warnings":      False,   # ← False pour voir les warnings
         "progress_hooks":   [hook],
         "outtmpl":          tpl,
         "retries":          3,
@@ -97,9 +108,12 @@ def download_media(url: str, format_type: str = "mp4", quality: str = "best") ->
     }
     if cookie_file:
         common["cookiefile"] = cookie_file
-        logger.info(f"Utilisation cookies {platform}")
+        logger.info(f"Utilisation cookies {platform} : {cookie_file}")
+    else:
+        logger.warning(f"Pas de cookie pour {platform}, téléchargement anonyme.")
     if PROXY_URL:
         common["proxy"] = PROXY_URL
+        logger.info(f"Proxy utilisé : {PROXY_URL}")
 
     # ── MP3 ───────────────────────────────────────────────────────────────────
     if format_type == "mp3":
@@ -127,15 +141,33 @@ def download_media(url: str, format_type: str = "mp4", quality: str = "best") ->
             "merge_output_format": "mp4",
         }
 
-    with yt_dlp.YoutubeDL(opts) as ydl:
-        info  = ydl.extract_info(url, download=True)
-        title = info.get("title", "media")
+    try:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info  = ydl.extract_info(url, download=True)
+            title = info.get("title", "media")
+            logger.info(f"Extraction réussie : {title}")
+    except yt_dlp.utils.DownloadError as e:
+        logger.error(f"DownloadError [{platform}] format={format_type} quality={quality}: {e}")
+        raise
+    except Exception as e:
+        logger.error(f"Erreur inattendue [{platform}] format={format_type}: {e}")
+        raise
 
     path = downloaded[-1] if downloaded else None
+    logger.info(f"Chemin brut retourné par hook : {path}")
+
     if path and not os.path.exists(path):
         base = os.path.splitext(path)[0]
+        logger.warning(f"Fichier introuvable à {path}, recherche par extension...")
         for ext in [".mp3", ".mp4", ".m4a", ".webm", ".mkv"]:
-            if os.path.exists(base + ext):
-                return base + ext, title
+            candidate = base + ext
+            if os.path.exists(candidate):
+                logger.info(f"Fichier trouvé : {candidate}")
+                return candidate, title
 
+    if not path or not os.path.exists(path):
+        logger.error(f"Fichier final introuvable. downloaded={downloaded}")
+        return None, title
+
+    logger.info(f"Téléchargement terminé : {path}")
     return path, title
