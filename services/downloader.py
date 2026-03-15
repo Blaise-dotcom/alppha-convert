@@ -1,13 +1,11 @@
 """
 services/downloader.py
 """
-import yt_dlp, os, base64, logging
+import yt_dlp, os, base64, logging, re
 from config import DOWNLOAD_PATH, PROXY_URL, COOKIES_YOUTUBE, COOKIES_INSTAGRAM, COOKIES_TIKTOK
 
 logger = logging.getLogger(__name__)
 os.makedirs(DOWNLOAD_PATH, exist_ok=True)
-
-# ─── Écrire les cookies dans /tmp ────────────────────────────────────────────
 
 def _write_cookie(b64_content: str, filename: str) -> str | None:
     if not b64_content:
@@ -31,8 +29,6 @@ _cookie_paths = {
 logger.info(f"Cookies chargés: { {k: bool(v) for k, v in _cookie_paths.items()} }")
 
 
-# ─── Détection plateforme ─────────────────────────────────────────────────────
-
 def detect_platform(url: str) -> str | None:
     u = url.lower()
     if "youtube.com" in u or "youtu.be" in u:
@@ -44,20 +40,16 @@ def detect_platform(url: str) -> str | None:
     return None
 
 
-# ─── Récupérer les infos ──────────────────────────────────────────────────────
-
 def get_video_info(url: str) -> dict:
     platform = detect_platform(url)
     opts = {"quiet": True, "no_warnings": True, "skip_download": True}
 
     if platform == "instagram" and _cookie_paths.get("instagram"):
         opts["cookiefile"] = _cookie_paths["instagram"]
-
     if platform == "tiktok":
         opts["impersonate"] = "chrome110"
         if _cookie_paths.get("tiktok"):
             opts["cookiefile"] = _cookie_paths["tiktok"]
-
     if PROXY_URL:
         opts["proxy"] = PROXY_URL
 
@@ -77,48 +69,31 @@ def get_video_info(url: str) -> dict:
     }
 
 
-# ─── Téléchargement ───────────────────────────────────────────────────────────
-
 def download_media(url: str, format_type: str = "mp4", quality: str = "720") -> tuple[str | None, str]:
     platform = detect_platform(url)
     tpl      = os.path.join(DOWNLOAD_PATH, "%(id)s_%(title).60s.%(ext)s")
-    downloaded = []
-    title = "media"
+    title    = "media"
 
     logger.info(f"Début téléchargement | platform={platform} | format={format_type} | quality={quality}")
 
-    def hook(d):
-        if d["status"] == "finished":
-            downloaded.append(d["filename"])
-            logger.info(f"Fichier téléchargé : {d['filename']}")
-        elif d["status"] == "post_process":
-            final = d.get("info_dict", {}).get("filepath")
-            if final:
-                downloaded.append(final)
-                logger.info(f"Fichier final fusionné : {final}")
-
     base_opts = {
-        "outtmpl":        tpl,
-        "quiet":          False,
-        "no_warnings":    False,
-        "progress_hooks": [hook],
+        "outtmpl":     tpl,
+        "quiet":       False,
+        "no_warnings": False,
     }
 
     if PROXY_URL:
         base_opts["proxy"] = PROXY_URL
-
     if platform == "instagram" and _cookie_paths.get("instagram"):
         base_opts["cookiefile"] = _cookie_paths["instagram"]
         logger.info("Instagram : cookies activés")
-
     if platform == "tiktok":
         base_opts["impersonate"] = "chrome110"
         if _cookie_paths.get("tiktok"):
             base_opts["cookiefile"] = _cookie_paths["tiktok"]
-        logger.info("TikTok : impersonate chrome110 activé")
-
+        logger.info("TikTok : impersonate chrome110")
     if platform == "youtube":
-        logger.info("YouTube : mode simple sans cookies")
+        logger.info("YouTube : mode simple")
 
     # ── MP3 ───────────────────────────────────────────────────────────────────
     if format_type == "mp3":
@@ -131,11 +106,9 @@ def download_media(url: str, format_type: str = "mp4", quality: str = "720") -> 
                 "preferredquality": "192",
             }],
         }
-
     # ── MP4 ───────────────────────────────────────────────────────────────────
     else:
         if platform == "instagram":
-            # Instagram n'a qu'un seul format
             fmt = "best[ext=mp4]/best"
         else:
             qmap = {
@@ -156,31 +129,30 @@ def download_media(url: str, format_type: str = "mp4", quality: str = "720") -> 
         with yt_dlp.YoutubeDL(opts) as ydl:
             info  = ydl.extract_info(url, download=True)
             title = info.get("title", "media")
-            logger.info(f"Extraction réussie : {title}")
+            # Récupérer le chemin final directement depuis info_dict
+            path  = ydl.prepare_filename(info)
+            # Corriger l'extension si nécessaire
+            base  = re.sub(r'\.\w+$', '', path)
+            for ext in [".mp4", ".mp3", ".mkv", ".webm", ".m4a"]:
+                candidate = base + ext
+                if os.path.exists(candidate):
+                    logger.info(f"Téléchargement terminé : {candidate}")
+                    return candidate, title
+            # Fallback : chercher dans le dossier par ID
+            video_id = info.get("id", "")
+            if video_id:
+                for f in os.listdir(DOWNLOAD_PATH):
+                    if f.startswith(video_id) and not f.endswith(('.part', '.ytdl')):
+                        full = os.path.join(DOWNLOAD_PATH, f)
+                        logger.info(f"Fichier trouvé par ID : {full}")
+                        return full, title
+
+            logger.error(f"Fichier introuvable après téléchargement. path={path}")
+            return None, title
+
     except yt_dlp.utils.DownloadError as e:
         logger.error(f"DownloadError [{platform}] format={format_type} quality={quality}: {e}")
         raise
     except Exception as e:
         logger.error(f"Erreur inattendue [{platform}] format={format_type}: {e}")
         raise
-
-    # Chercher le fichier final fusionné
-    path = next((f for f in reversed(downloaded) if f.endswith(".mp4") and os.path.exists(f)), None) \
-           or next((f for f in reversed(downloaded) if os.path.exists(f)), None) \
-           or (downloaded[-1] if downloaded else None)
-
-    if path and not os.path.exists(path):
-        base = os.path.splitext(path)[0]
-        logger.warning(f"Fichier introuvable à {path}, recherche...")
-        for ext in [".mp3", ".mp4", ".m4a", ".webm", ".mkv"]:
-            candidate = base + ext
-            if os.path.exists(candidate):
-                logger.info(f"Fichier trouvé : {candidate}")
-                return candidate, title
-
-    if not path or not os.path.exists(path):
-        logger.error(f"Fichier final introuvable. downloaded={downloaded}")
-        return None, title
-
-    logger.info(f"Téléchargement terminé : {path}")
-    return path, title
