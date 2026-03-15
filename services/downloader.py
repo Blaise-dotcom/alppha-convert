@@ -66,19 +66,19 @@ def download_media(url: str, format_type: str = "mp4", quality: str = "best") ->
 
     # ── Vidéo ──────────────────────────────────────────────────────────────────
     else:
-       quality_map = {
-        "best": "best[ext=mp4]/best",
-        "720":  "best[height<=720][ext=mp4]/best[height<=720]",
-        "480":  "best[height<=480][ext=mp4]/best[height<=480]",
-        "360":  "best[height<=360][ext=mp4]/best[height<=360]",
-}
+        quality_map = {
+            "best": "best[ext=mp4]/best",
+            "720":  "best[height<=720][ext=mp4]/best[height<=720]",
+            "480":  "best[height<=480][ext=mp4]/best[height<=480]",
+            "360":  "best[height<=360][ext=mp4]/best[height<=360]",
+        }
         opts = {
-            "format":               quality_map.get(quality, quality_map["best"]),
-            "outtmpl":              filename_tpl,
-            "merge_output_format":  "mp4",
-            "quiet":                True,
-            "no_warnings":          True,
-            "progress_hooks":       [progress_hook],
+            "format":              quality_map.get(quality, quality_map["best"]),
+            "outtmpl":             filename_tpl,
+            "merge_output_format": "mp4",
+            "quiet":               True,
+            "no_warnings":         True,
+            "progress_hooks":      [progress_hook],
         }
 
     with yt_dlp.YoutubeDL(opts) as ydl:
