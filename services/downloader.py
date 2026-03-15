@@ -2,7 +2,7 @@
 services/downloader.py — yt-dlp avec cookies (YouTube + TikTok + Instagram)
 Les cookies sont stockés en base64 dans les variables d'environnement Railway.
 """
-import yt_dlp, os, re, base64, logging, tempfile
+import yt_dlp, os, base64, logging
 from config import DOWNLOAD_PATH, PROXY_URL, COOKIES_YOUTUBE, COOKIES_INSTAGRAM, COOKIES_TIKTOK
 
 logger = logging.getLogger(__name__)
@@ -47,22 +47,40 @@ def detect_platform(url: str) -> str | None:
     return None
 
 
+# ─── Options communes ─────────────────────────────────────────────────────────
+
+def _common_opts(platform: str | None, hook=None) -> dict:
+    cookie_file = _cookie_paths.get(platform or "")
+    opts = {
+        "quiet":            False,
+        "no_warnings":      False,
+        "retries":          3,
+        "fragment_retries": 3,
+        "extractor_args": {
+            "youtube": {"player_client": ["ios", "android", "web"]}
+        },
+    }
+    if hook:
+        opts["progress_hooks"] = [hook]
+    if cookie_file:
+        opts["cookiefile"] = cookie_file
+        logger.info(f"Utilisation cookies {platform} : {cookie_file}")
+    else:
+        logger.warning(f"Pas de cookie pour {platform}, téléchargement anonyme.")
+    if PROXY_URL:
+        opts["proxy"] = PROXY_URL
+        logger.info(f"Proxy utilisé : {PROXY_URL}")
+    return opts
+
+
 # ─── Récupérer les infos ──────────────────────────────────────────────────────
 
 def get_video_info(url: str) -> dict:
     platform = detect_platform(url)
-    cookie_file = _cookie_paths.get(platform or "")
-
     opts = {
-        "quiet": True,
-        "no_warnings": True,
+        **_common_opts(platform),
         "skip_download": True,
-        "extractor_args": {"youtube": {"player_client": ["android", "web"]}},
     }
-    if cookie_file:
-        opts["cookiefile"] = cookie_file
-    if PROXY_URL:
-        opts["proxy"] = PROXY_URL
 
     try:
         with yt_dlp.YoutubeDL(opts) as ydl:
@@ -83,10 +101,9 @@ def get_video_info(url: str) -> dict:
 # ─── Téléchargement ───────────────────────────────────────────────────────────
 
 def download_media(url: str, format_type: str = "mp4", quality: str = "best") -> tuple[str | None, str]:
-    platform    = detect_platform(url)
-    cookie_file = _cookie_paths.get(platform or "")
-    tpl         = os.path.join(DOWNLOAD_PATH, "%(id)s_%(title).60s.%(ext)s")
-    downloaded  = []
+    platform   = detect_platform(url)
+    tpl        = os.path.join(DOWNLOAD_PATH, "%(id)s_%(title).60s.%(ext)s")
+    downloaded = []
 
     logger.info(f"Début téléchargement | platform={platform} | format={format_type} | quality={quality} | url={url}")
 
@@ -98,22 +115,9 @@ def download_media(url: str, format_type: str = "mp4", quality: str = "best") ->
             logger.error(f"Erreur hook yt-dlp : {d}")
 
     common = {
-        "quiet":            False,   # ← False pour voir les logs dans Railway
-        "no_warnings":      False,   # ← False pour voir les warnings
-        "progress_hooks":   [hook],
-        "outtmpl":          tpl,
-        "retries":          3,
-        "fragment_retries": 3,
-        "extractor_args":   {"youtube": {"player_client": ["android", "web"]}},
+        **_common_opts(platform, hook),
+        "outtmpl": tpl,
     }
-    if cookie_file:
-        common["cookiefile"] = cookie_file
-        logger.info(f"Utilisation cookies {platform} : {cookie_file}")
-    else:
-        logger.warning(f"Pas de cookie pour {platform}, téléchargement anonyme.")
-    if PROXY_URL:
-        common["proxy"] = PROXY_URL
-        logger.info(f"Proxy utilisé : {PROXY_URL}")
 
     # ── MP3 ───────────────────────────────────────────────────────────────────
     if format_type == "mp3":
@@ -129,11 +133,12 @@ def download_media(url: str, format_type: str = "mp4", quality: str = "best") ->
 
     # ── MP4 ───────────────────────────────────────────────────────────────────
     else:
+        # Merge video + audio séparément (YouTube ne sert plus de mp4 direct)
         qmap = {
-            "best": "best[ext=mp4]/best",
-            "720":  "best[height<=720][ext=mp4]/best[height<=720]",
-            "480":  "best[height<=480][ext=mp4]/best[height<=480]",
-            "360":  "best[height<=360][ext=mp4]/best[height<=360]",
+            "best": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best",
+            "720":  "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=720]+bestaudio/best",
+            "480":  "bestvideo[height<=480][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=480]+bestaudio/best",
+            "360":  "bestvideo[height<=360][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=360]+bestaudio/best",
         }
         opts = {
             **common,
