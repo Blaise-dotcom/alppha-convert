@@ -153,11 +153,28 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         label = label_map.get(plan, plan)
         until_str = "À vie ♾️" if plan == "lifetime" else until.strftime("%d/%m/%Y")
 
+        # Notifier l'utilisateur
+        try:
+            await context.bot.send_message(
+                chat_id=target_id,
+                text=f"🎉 Félicitations !\n\n"
+                     f"💎 Tu viens de recevoir un accès Premium sur Alpha Convert !\n\n"
+                     f"📅 Plan : {label}\n"
+                     f"📆 Valide jusqu'au : {until_str}\n\n"
+                     f"🚀 Tu peux maintenant télécharger sans limite et accéder à tous les formats !\n\n"
+                     f"Merci de ta confiance 🙏",
+            )
+            notif = "\n\n📩 Utilisateur notifié."
+        except Exception as e:
+            logger.warning(f"Impossible de notifier l'utilisateur {target_id} : {e}")
+            notif = "\n\n⚠️ Impossible de notifier l'utilisateur (il n'a peut-être jamais démarré le bot)."
+
         await query.edit_message_text(
             f"✅ Premium activé !\n\n"
             f"👤 User ID : {target_id}\n"
             f"📅 Plan : {label}\n"
-            f"📆 Expire le : {until_str}",
+            f"📆 Expire le : {until_str}"
+            f"{notif}",
         )
         context.user_data.pop("adm_target_id", None)
         return ConversationHandler.END
