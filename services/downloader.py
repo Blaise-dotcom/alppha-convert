@@ -56,20 +56,24 @@ def _common_opts(platform: str | None, hook=None) -> dict:
         "no_warnings":      False,
         "retries":          3,
         "fragment_retries": 3,
-        "extractor_args": {
-            "youtube": {"player_client": ["ios", "android", "web"]}
-        },
     }
-    if hook:
-        opts["progress_hooks"] = [hook]
+
     if cookie_file:
+        # Avec cookies → laisser yt-dlp choisir le client automatiquement
+        # (ios et android ne supportent pas les cookies → ils seraient skippés)
         opts["cookiefile"] = cookie_file
         logger.info(f"Utilisation cookies {platform} : {cookie_file}")
     else:
-        logger.warning(f"Pas de cookie pour {platform}, téléchargement anonyme.")
+        # Sans cookies → forcer le client ios (pas de challenge JS requis)
+        opts["extractor_args"] = {"youtube": {"player_client": ["ios"]}}
+        logger.warning(f"Pas de cookie pour {platform}, client ios sans challenge JS.")
+
+    if hook:
+        opts["progress_hooks"] = [hook]
     if PROXY_URL:
         opts["proxy"] = PROXY_URL
         logger.info(f"Proxy utilisé : {PROXY_URL}")
+
     return opts
 
 
@@ -133,7 +137,7 @@ def download_media(url: str, format_type: str = "mp4", quality: str = "best") ->
 
     # ── MP4 ───────────────────────────────────────────────────────────────────
     else:
-        # Merge video + audio séparément (YouTube ne sert plus de mp4 direct)
+        # Merge video + audio séparément (YouTube ne distribue plus de mp4 direct)
         qmap = {
             "best": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best",
             "720":  "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=720]+bestaudio/best",
