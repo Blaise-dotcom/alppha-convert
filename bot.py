@@ -1,3 +1,4 @@
+import time
 import logging
 from telegram import Update
 from telegram.ext import (
@@ -99,6 +100,9 @@ def build_app() -> Application:
 
 def main():
     logger.info("🚀 Démarrage de Alpha Convert...")
+    # Attendre que l'ancienne instance se déconnecte (évite le conflit Telegram)
+    logger.info("⏳ Attente de 5s pour éviter les conflits de polling...")
+    time.sleep(5)
     init_db()
     app = build_app()
     logger.info("✅ Bot lancé — en attente de messages")
