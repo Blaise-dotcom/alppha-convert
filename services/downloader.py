@@ -8,7 +8,7 @@ from config import DOWNLOAD_PATH, PROXY_URL, COOKIES_YOUTUBE, COOKIES_INSTAGRAM,
 logger = logging.getLogger(__name__)
 os.makedirs(DOWNLOAD_PATH, exist_ok=True)
 
-# ─── Vérification Node.js (nécessaire pour résoudre les challenges YouTube) ───
+# ─── Vérification Node.js ─────────────────────────────────────────────────────
 _node = shutil.which("node")
 if _node:
     logger.info(f"✅ Node.js trouvé : {_node}")
@@ -49,7 +49,7 @@ def detect_platform(url: str) -> str | None:
         return "youtube"
     elif "instagram.com" in u:
         return "instagram"
-    elif "tiktok.com" in u or "vm.tiktok.com" in u:
+    elif "tiktok.com" in u or "vm.tiktok.com" in u or "vt.tiktok.com" in u:
         return "tiktok"
     return None
 
@@ -66,13 +66,16 @@ def _common_opts(platform: str | None, hook=None) -> dict:
         "fragment_retries": 5,
         "extractor_args": {
             "youtube": {
-                # ios est le plus fiable, les autres sont des fallbacks
-                "player_client": ["ios", "web_creator", "mweb", "tv_embedded"],
+                # tv + web contourne SABR sans PO Token ni cookies
+                "player_client": ["tv", "web"],
             }
         },
     }
 
-    if cookie_file:
+    # YouTube : ne pas utiliser les cookies (cause SABR + PO Token errors)
+    if platform == "youtube":
+        logger.info("YouTube : cookies désactivés (mode tv+web)")
+    elif cookie_file:
         opts["cookiefile"] = cookie_file
         logger.info(f"Utilisation cookies {platform} : {cookie_file}")
     else:
@@ -132,13 +135,16 @@ def download_media(url: str, format_type: str = "mp4", quality: str = "best") ->
     platform   = detect_platform(url)
     tpl        = os.path.join(DOWNLOAD_PATH, "%(id)s_%(title).60s.%(ext)s")
     downloaded = []
+    title      = "media"
 
     logger.info(f"Début téléchargement | platform={platform} | format={format_type} | quality={quality} | url={url}")
 
     def hook(d):
         if d["status"] == "finished":
-            downloaded.append(d["filename"])
-            logger.info(f"Fichier téléchargé : {d['filename']}")
+            # Prendre le fichier fusionné final si disponible
+            final = d.get("info_dict", {}).get("filepath") or d["filename"]
+            downloaded.append(final)
+            logger.info(f"Fichier téléchargé : {final}")
         elif d["status"] == "error":
             logger.error(f"Erreur hook yt-dlp : {d}")
 
@@ -185,7 +191,10 @@ def download_media(url: str, format_type: str = "mp4", quality: str = "best") ->
         logger.error(f"Erreur inattendue [{platform}] format={format_type}: {e}")
         raise
 
-    path = downloaded[-1] if downloaded else None
+    # Chercher le fichier .mp4 final fusionné en priorité
+    path = next((f for f in reversed(downloaded) if f.endswith(".mp4")), None) \
+           or (downloaded[-1] if downloaded else None)
+
     logger.info(f"Chemin brut retourné par hook : {path}")
 
     if path and not os.path.exists(path):
