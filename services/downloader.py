@@ -66,12 +66,12 @@ def download_media(url: str, format_type: str = "mp4", quality: str = "best") ->
 
     # ── Vidéo ──────────────────────────────────────────────────────────────────
     else:
-        quality_map = {
-            "best": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
-            "720":  "bestvideo[height<=720][ext=mp4]+bestaudio/best[height<=720]",
-            "480":  "bestvideo[height<=480][ext=mp4]+bestaudio/best[height<=480]",
-            "360":  "bestvideo[height<=360][ext=mp4]+bestaudio/best[height<=360]",
-        }
+       quality_map = {
+        "best": "best[ext=mp4]/best",
+        "720":  "best[height<=720][ext=mp4]/best[height<=720]",
+        "480":  "best[height<=480][ext=mp4]/best[height<=480]",
+        "360":  "best[height<=360][ext=mp4]/best[height<=360]",
+}
         opts = {
             "format":               quality_map.get(quality, quality_map["best"]),
             "outtmpl":              filename_tpl,
