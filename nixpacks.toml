@@ -1,2 +1,5 @@
 [phases.setup]
 nixPkgs = ["python311", "ffmpeg"]
+
+[variables]
+NIXPACKS_NO_BUILD_SECRETS = "1"
