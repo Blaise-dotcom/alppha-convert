@@ -1,7 +1,7 @@
 import yt_dlp
 import os
 import logging
-from config import DOWNLOAD_PATH
+from config import DOWNLOAD_PATH, PROXY_URL
 
 logger = logging.getLogger(__name__)
 os.makedirs(DOWNLOAD_PATH, exist_ok=True)
@@ -29,6 +29,9 @@ def get_video_info(url: str) -> dict:
         "skip_download": True,
         "extractor_args": {"youtube": {"player_client": ["android", "web"]}},
     }
+    if PROXY_URL:
+        opts["proxy"] = PROXY_URL
+
     with yt_dlp.YoutubeDL(opts) as ydl:
         info = ydl.extract_info(url, download=False)
     return {
@@ -43,10 +46,6 @@ def get_video_info(url: str) -> dict:
 # ─── Téléchargement ───────────────────────────────────────────────────────────
 
 def download_media(url: str, format_type: str = "mp4", quality: str = "best") -> tuple[str | None, str]:
-    """
-    Télécharge une vidéo ou audio.
-    Retourne (chemin_fichier, titre)
-    """
     filename_tpl = os.path.join(DOWNLOAD_PATH, "%(id)s_%(title).60s.%(ext)s")
     downloaded = []
 
@@ -63,27 +62,24 @@ def download_media(url: str, format_type: str = "mp4", quality: str = "best") ->
         "fragment_retries": 3,
         "outtmpl": filename_tpl,
     }
+    if PROXY_URL:
+        common_opts["proxy"] = PROXY_URL
 
     # ── Audio MP3 ─────────────────────────────────────────────────────────────
     if format_type == "mp3":
         opts = {
             **common_opts,
-            # Pas besoin de FFmpeg : on prend l'audio natif en m4a/opus/webm
             "format": "bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best",
-            # On renomme juste en .mp3 si FFmpeg absent, sinon conversion réelle
             "postprocessors": [{
                 "key": "FFmpegExtractAudio",
                 "preferredcodec": "mp3",
                 "preferredquality": "192",
             }],
-            # Si FFmpeg absent, yt-dlp télécharge sans post-process
-            "ignoreerrors": False,
         }
 
     # ── Vidéo MP4 ─────────────────────────────────────────────────────────────
     else:
         quality_map = {
-            # "best[ext=mp4]" = flux vidéo+audio déjà fusionné → pas besoin de FFmpeg
             "best": "best[ext=mp4]/best",
             "720":  "best[height<=720][ext=mp4]/best[height<=720]",
             "480":  "best[height<=480][ext=mp4]/best[height<=480]",
@@ -99,7 +95,6 @@ def download_media(url: str, format_type: str = "mp4", quality: str = "best") ->
         info = ydl.extract_info(url, download=True)
         title = info.get("title", "media")
 
-    # Retrouver le fichier (yt-dlp peut changer l'extension après post-process)
     path = downloaded[-1] if downloaded else None
     if path and not os.path.exists(path):
         base = os.path.splitext(path)[0]
