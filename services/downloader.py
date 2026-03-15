@@ -2,6 +2,7 @@
 services/downloader.py
 """
 import yt_dlp, os, base64, logging, re
+from yt_dlp.networking.impersonate import ImpersonateTarget
 from config import DOWNLOAD_PATH, PROXY_URL, COOKIES_YOUTUBE, COOKIES_INSTAGRAM, COOKIES_TIKTOK
 
 logger = logging.getLogger(__name__)
@@ -47,7 +48,7 @@ def get_video_info(url: str) -> dict:
     if platform == "instagram" and _cookie_paths.get("instagram"):
         opts["cookiefile"] = _cookie_paths["instagram"]
     if platform == "tiktok":
-        opts["impersonate"] = "chrome110"
+        opts["impersonate"] = ImpersonateTarget("chrome")
         if _cookie_paths.get("tiktok"):
             opts["cookiefile"] = _cookie_paths["tiktok"]
     if PROXY_URL:
@@ -88,10 +89,10 @@ def download_media(url: str, format_type: str = "mp4", quality: str = "720") -> 
         base_opts["cookiefile"] = _cookie_paths["instagram"]
         logger.info("Instagram : cookies activés")
     if platform == "tiktok":
-        base_opts["impersonate"] = "chrome110"
+        base_opts["impersonate"] = ImpersonateTarget("chrome")
         if _cookie_paths.get("tiktok"):
             base_opts["cookiefile"] = _cookie_paths["tiktok"]
-        logger.info("TikTok : impersonate chrome110")
+        logger.info("TikTok : impersonate ImpersonateTarget(chrome)")
     if platform == "youtube":
         logger.info("YouTube : mode simple")
 
@@ -129,16 +130,13 @@ def download_media(url: str, format_type: str = "mp4", quality: str = "720") -> 
         with yt_dlp.YoutubeDL(opts) as ydl:
             info  = ydl.extract_info(url, download=True)
             title = info.get("title", "media")
-            # Récupérer le chemin final directement depuis info_dict
             path  = ydl.prepare_filename(info)
-            # Corriger l'extension si nécessaire
             base  = re.sub(r'\.\w+$', '', path)
             for ext in [".mp4", ".mp3", ".mkv", ".webm", ".m4a"]:
                 candidate = base + ext
                 if os.path.exists(candidate):
                     logger.info(f"Téléchargement terminé : {candidate}")
                     return candidate, title
-            # Fallback : chercher dans le dossier par ID
             video_id = info.get("id", "")
             if video_id:
                 for f in os.listdir(DOWNLOAD_PATH):
