@@ -18,11 +18,9 @@ WAITING_FORMAT  = 11
 WAITING_QUALITY = 12
 
 
-def _safe(text: str) -> str:
-    """Échappe les caractères Markdown spéciaux dans un texte utilisateur."""
-    for ch in ["_", "*", "[", "]", "`"]:
-        text = text.replace(ch, f"\\{ch}")
-    return text
+def _clean(text: str) -> str:
+    """Supprime les caractères spéciaux pour éviter les erreurs Telegram."""
+    return "".join(c for c in text if c.isalnum() or c in " .,!?()+-")
 
 
 async def start_download(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -31,7 +29,6 @@ async def start_download(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = query.from_user.id
     ensure_user(user_id, query.from_user.username, query.from_user.first_name)
 
-    # Nettoyer l'état précédent si l'utilisateur reclique sur Télécharger
     context.user_data.clear()
 
     usage   = get_usage(user_id)
@@ -39,11 +36,10 @@ async def start_download(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if not premium and usage["downloads"] >= FREE_DOWNLOADS_PER_DAY:
         await query.edit_message_text(
-            f"❌ *Limite atteinte !*\n\n"
+            f"❌ Limite atteinte !\n\n"
             f"Tu as utilisé tes {FREE_DOWNLOADS_PER_DAY} téléchargements gratuits aujourd'hui.\n"
             "Le quota se renouvelle chaque jour à minuit.\n\n"
-            "💎 Passe en *Premium* pour un accès illimité !",
-            ,
+            "💎 Passe en Premium pour un accès illimité !",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("💎 Voir les plans", callback_data="premium")],
                 [InlineKeyboardButton("⬅️ Retour",         callback_data="menu")],
@@ -55,15 +51,14 @@ async def start_download(update: Update, context: ContextTypes.DEFAULT_TYPE):
     max_size  = PREMIUM_MAX_FILE_SIZE_MB if premium else FREE_MAX_FILE_SIZE_MB
 
     await query.edit_message_text(
-        "📥 *Téléchargement de média*\n\n"
+        "📥 Téléchargement de média\n\n"
         "Envoie-moi le lien de la vidéo :\n\n"
         "🔴 YouTube\n"
-        "📸 Instagram \\(posts, reels\\)\n"
+        "📸 Instagram (posts, reels)\n"
         "🎵 TikTok\n\n"
-        f"📊 Quota aujourd'hui : *{remaining}*\n"
-        f"📁 Taille max : *{max_size}MB*\n\n"
-        "_Envoie /cancel pour annuler_",
-        ,
+        f"📊 Quota aujourd'hui : {remaining}\n"
+        f"📁 Taille max : {max_size}MB\n\n"
+        "Envoie /cancel pour annuler",
     )
     return WAITING_LINK
 
@@ -96,13 +91,13 @@ async def handle_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         dur     = info["duration"]
         dur_str = f"{int(dur)//60}:{int(dur)%60:02d}" if dur else "?"
-        title   = info["title"][:50] + ("…" if len(info["title"]) > 50 else "")
+        title   = _clean(info["title"][:50])
 
         await msg.edit_text(
             f"✅ Vidéo trouvée !\n\n"
             f"📌 {title}\n"
             f"⏱ Durée : {dur_str}\n"
-            f"👤 {info['uploader']}\n\n"
+            f"👤 {_clean(info['uploader'])}\n\n"
             "Choisis le format :",
             reply_markup=_format_keyboard(),
         )
@@ -126,7 +121,7 @@ async def handle_format(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if fmt == "mp3":
         context.user_data["quality"] = "720"
-        await query.edit_message_text("⏳ Téléchargement MP3 en cours...\n_Ça peut prendre quelques secondes._", )
+        await query.edit_message_text("⏳ Téléchargement MP3 en cours...\nCa peut prendre quelques secondes.")
         await _do_download(query.message, context, query.from_user.id)
         return ConversationHandler.END
 
@@ -147,7 +142,7 @@ async def handle_quality(update: Update, context: ContextTypes.DEFAULT_TYPE):
     labels = {"1080": "1080p HD", "720": "720p", "480": "480p", "360": "360p"}
     await query.edit_message_text(
         f"⏳ Téléchargement en {labels.get(quality, quality)} en cours...\n"
-        "Ça peut prendre quelques secondes.",
+        "Ca peut prendre quelques secondes.",
     )
     await _do_download(query.message, context, query.from_user.id)
     return ConversationHandler.END
@@ -160,7 +155,6 @@ async def _do_download(message, context: ContextTypes.DEFAULT_TYPE, user_id: int
     premium = is_premium(user_id)
     max_mb  = PREMIUM_MAX_FILE_SIZE_MB if premium else FREE_MAX_FILE_SIZE_MB
 
-    # Envoyer l'action "upload" pour montrer que le bot travaille
     try:
         await message.get_bot().send_chat_action(
             chat_id=message.chat_id,
@@ -191,7 +185,6 @@ async def _do_download(message, context: ContextTypes.DEFAULT_TYPE, user_id: int
             )
             return
 
-        # Envoyer l'action upload pendant l'envoi du fichier
         try:
             await message.get_bot().send_chat_action(
                 chat_id=message.chat_id,
@@ -200,7 +193,7 @@ async def _do_download(message, context: ContextTypes.DEFAULT_TYPE, user_id: int
         except Exception:
             pass
 
-        safe_title = "".join(c for c in title[:100] if c.isalnum() or c in " .,!?")
+        safe_title = _clean(title[:100])
 
         with open(file_path, "rb") as f:
             if fmt == "mp3":
@@ -208,12 +201,12 @@ async def _do_download(message, context: ContextTypes.DEFAULT_TYPE, user_id: int
                     f,
                     title=safe_title[:64],
                     filename=f"{safe_title[:50]}.mp3",
-                    caption="Via Alpha Convert ✨",
+                    caption="Via Alpha Convert",
                 )
             else:
                 await message.reply_video(
                     f,
-                    caption=f"🎬 {safe_title}\n\nVia Alpha Convert ✨",
+                    caption=f"Via Alpha Convert",
                     supports_streaming=True,
                 )
 
@@ -228,7 +221,6 @@ async def _do_download(message, context: ContextTypes.DEFAULT_TYPE, user_id: int
 
     except Exception as e:
         logger.error(f"Erreur download : {e}")
-        # Nettoyer le fichier si il existe
         try:
             if 'file_path' in locals() and file_path and os.path.exists(file_path):
                 os.remove(file_path)
