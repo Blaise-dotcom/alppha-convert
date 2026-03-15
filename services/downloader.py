@@ -62,12 +62,12 @@ def _common_opts(platform: str | None, hook=None) -> dict:
     opts = {
         "quiet":            False,
         "no_warnings":      False,
-        "retries":          3,
-        "fragment_retries": 3,
-        # Utiliser web_creator qui ne nécessite pas de challenge JS complexe
+        "retries":          5,
+        "fragment_retries": 5,
         "extractor_args": {
             "youtube": {
-                "player_client": ["web_creator", "web", "ios"],
+                # ios est le plus fiable, les autres sont des fallbacks
+                "player_client": ["ios", "web_creator", "mweb", "tv_embedded"],
             }
         },
     }
@@ -77,6 +77,19 @@ def _common_opts(platform: str | None, hook=None) -> dict:
         logger.info(f"Utilisation cookies {platform} : {cookie_file}")
     else:
         logger.warning(f"Pas de cookie pour {platform}.")
+
+    # ── Options spécifiques TikTok ────────────────────────────────────────────
+    if platform == "tiktok":
+        opts["http_headers"] = {
+            "User-Agent": (
+                "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) "
+                "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
+            ),
+            "Referer": "https://www.tiktok.com/",
+        }
+        opts["extractor_args"] = {
+            "tiktok": {"app_version": "36.1.3", "manifest_app_version": "2023601030"}
+        }
 
     if hook:
         opts["progress_hooks"] = [hook]
@@ -149,10 +162,10 @@ def download_media(url: str, format_type: str = "mp4", quality: str = "best") ->
     # ── MP4 ───────────────────────────────────────────────────────────────────
     else:
         qmap = {
-            "best": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best",
-            "720":  "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=720]+bestaudio/best",
-            "480":  "bestvideo[height<=480][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=480]+bestaudio/best",
-            "360":  "bestvideo[height<=360][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=360]+bestaudio/best",
+            "best": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best[ext=mp4]/best",
+            "720":  "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=720]+bestaudio/best[height<=720][ext=mp4]/best[height<=720]/best",
+            "480":  "bestvideo[height<=480][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=480]+bestaudio/best[height<=480][ext=mp4]/best[height<=480]/best",
+            "360":  "bestvideo[height<=360][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=360]+bestaudio/best[height<=360][ext=mp4]/best[height<=360]/best",
         }
         opts = {
             **common,
