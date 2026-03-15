@@ -23,7 +23,12 @@ def detect_platform(url: str) -> str | None:
 # ─── Récupérer les infos sans télécharger ────────────────────────────────────
 
 def get_video_info(url: str) -> dict:
-    opts = {"quiet": True, "no_warnings": True, "skip_download": True}
+    opts = {
+        "quiet": True,
+        "no_warnings": True,
+        "skip_download": True,
+        "extractor_args": {"youtube": {"player_client": ["android", "web"]}},
+    }
     with yt_dlp.YoutubeDL(opts) as ydl:
         info = ydl.extract_info(url, download=False)
     return {
@@ -49,36 +54,45 @@ def download_media(url: str, format_type: str = "mp4", quality: str = "best") ->
         if d["status"] == "finished":
             downloaded.append(d["filename"])
 
-    # ── Audio ──────────────────────────────────────────────────────────────────
+    common_opts = {
+        "quiet": True,
+        "no_warnings": True,
+        "progress_hooks": [progress_hook],
+        "extractor_args": {"youtube": {"player_client": ["android", "web"]}},
+        "retries": 3,
+        "fragment_retries": 3,
+        "outtmpl": filename_tpl,
+    }
+
+    # ── Audio MP3 ─────────────────────────────────────────────────────────────
     if format_type == "mp3":
         opts = {
-            "format":      "bestaudio/best",
-            "outtmpl":     filename_tpl,
-            "quiet":       True,
-            "no_warnings": True,
+            **common_opts,
+            # Pas besoin de FFmpeg : on prend l'audio natif en m4a/opus/webm
+            "format": "bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best",
+            # On renomme juste en .mp3 si FFmpeg absent, sinon conversion réelle
             "postprocessors": [{
-                "key":              "FFmpegExtractAudio",
-                "preferredcodec":   "mp3",
+                "key": "FFmpegExtractAudio",
+                "preferredcodec": "mp3",
                 "preferredquality": "192",
             }],
-            "progress_hooks": [progress_hook],
+            # Si FFmpeg absent, yt-dlp télécharge sans post-process
+            "ignoreerrors": False,
         }
 
-    # ── Vidéo ──────────────────────────────────────────────────────────────────
+    # ── Vidéo MP4 ─────────────────────────────────────────────────────────────
     else:
         quality_map = {
+            # "best[ext=mp4]" = flux vidéo+audio déjà fusionné → pas besoin de FFmpeg
             "best": "best[ext=mp4]/best",
             "720":  "best[height<=720][ext=mp4]/best[height<=720]",
             "480":  "best[height<=480][ext=mp4]/best[height<=480]",
             "360":  "best[height<=360][ext=mp4]/best[height<=360]",
         }
         opts = {
+            **common_opts,
             "format":              quality_map.get(quality, quality_map["best"]),
-            "outtmpl":             filename_tpl,
             "merge_output_format": "mp4",
-            "quiet":               True,
-            "no_warnings":         True,
-            "progress_hooks":      [progress_hook],
         }
 
     with yt_dlp.YoutubeDL(opts) as ydl:
@@ -89,7 +103,7 @@ def download_media(url: str, format_type: str = "mp4", quality: str = "best") ->
     path = downloaded[-1] if downloaded else None
     if path and not os.path.exists(path):
         base = os.path.splitext(path)[0]
-        for ext in [".mp3", ".mp4", ".mkv", ".webm", ".m4a"]:
+        for ext in [".mp3", ".mp4", ".m4a", ".webm", ".mkv", ".ogg"]:
             candidate = base + ext
             if os.path.exists(candidate):
                 path = candidate
