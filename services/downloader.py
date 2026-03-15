@@ -1,6 +1,5 @@
 """
-services/downloader.py — yt-dlp avec cookies (YouTube + TikTok + Instagram)
-Les cookies sont stockés en base64 dans les variables d'environnement Railway.
+services/downloader.py
 """
 import yt_dlp, os, base64, logging, shutil
 from config import DOWNLOAD_PATH, PROXY_URL, COOKIES_YOUTUBE, COOKIES_INSTAGRAM, COOKIES_TIKTOK
@@ -8,18 +7,10 @@ from config import DOWNLOAD_PATH, PROXY_URL, COOKIES_YOUTUBE, COOKIES_INSTAGRAM,
 logger = logging.getLogger(__name__)
 os.makedirs(DOWNLOAD_PATH, exist_ok=True)
 
-# ─── Vérification Node.js ─────────────────────────────────────────────────────
-_node = shutil.which("node")
-if _node:
-    logger.info(f"✅ Node.js trouvé : {_node}")
-else:
-    logger.warning("⚠️ Node.js introuvable — les challenges YouTube risquent d'échouer")
-
-# ─── Écrire les cookies dans /tmp à chaque démarrage ─────────────────────────
+# ─── Écrire les cookies dans /tmp ────────────────────────────────────────────
 
 def _write_cookie(b64_content: str, filename: str) -> str | None:
     if not b64_content:
-        logger.warning(f"Cookie vide pour {filename}.")
         return None
     try:
         path = os.path.join("/tmp", filename)
@@ -31,7 +22,6 @@ def _write_cookie(b64_content: str, filename: str) -> str | None:
         logger.warning(f"Cookie write failed ({filename}): {e}")
         return None
 
-# Écrire les cookies au démarrage
 _cookie_paths = {
     "youtube":   _write_cookie(COOKIES_YOUTUBE,   "yt_cookies.txt"),
     "instagram": _write_cookie(COOKIES_INSTAGRAM, "ig_cookies.txt"),
@@ -54,55 +44,24 @@ def detect_platform(url: str) -> str | None:
     return None
 
 
-# ─── Options communes ─────────────────────────────────────────────────────────
-
-def _common_opts(platform: str | None, hook=None) -> dict:
-    cookie_file = _cookie_paths.get(platform or "")
-
-    opts = {
-        "quiet":            False,
-        "no_warnings":      False,
-        "retries":          5,
-        "fragment_retries": 5,
-        "extractor_args": {
-            "youtube": {
-                # android ne nécessite pas de JS ni de PO Token
-                "player_client": ["android", "android_vr"],
-            }
-        },
-    }
-
-    # YouTube : ne pas utiliser les cookies (cause SABR + PO Token errors)
-    if platform == "youtube":
-        logger.info("YouTube : cookies désactivés (mode android)")
-    elif cookie_file:
-        opts["cookiefile"] = cookie_file
-        logger.info(f"Utilisation cookies {platform} : {cookie_file}")
-    else:
-        logger.warning(f"Pas de cookie pour {platform}.")
-
-    # ── Options spécifiques TikTok ────────────────────────────────────────────
-    if platform == "tiktok":
-        opts["impersonate"] = "chrome"
-
-    if hook:
-        opts["progress_hooks"] = [hook]
-
-    if PROXY_URL:
-        opts["proxy"] = PROXY_URL
-        logger.info(f"Proxy utilisé : {PROXY_URL}")
-
-    return opts
-
-
 # ─── Récupérer les infos ──────────────────────────────────────────────────────
 
 def get_video_info(url: str) -> dict:
     platform = detect_platform(url)
-    opts = {
-        **_common_opts(platform),
-        "skip_download": True,
-    }
+    opts = {"quiet": True, "no_warnings": True, "skip_download": True}
+
+    # Cookies Instagram uniquement
+    if platform == "instagram" and _cookie_paths.get("instagram"):
+        opts["cookiefile"] = _cookie_paths["instagram"]
+
+    # TikTok : impersonate
+    if platform == "tiktok":
+        opts["impersonate"] = "chrome"
+        if _cookie_paths.get("tiktok"):
+            opts["cookiefile"] = _cookie_paths["tiktok"]
+
+    if PROXY_URL:
+        opts["proxy"] = PROXY_URL
 
     try:
         with yt_dlp.YoutubeDL(opts) as ydl:
@@ -123,31 +82,51 @@ def get_video_info(url: str) -> dict:
 # ─── Téléchargement ───────────────────────────────────────────────────────────
 
 def download_media(url: str, format_type: str = "mp4", quality: str = "best") -> tuple[str | None, str]:
-    platform   = detect_platform(url)
-    tpl        = os.path.join(DOWNLOAD_PATH, "%(id)s_%(title).60s.%(ext)s")
+    platform = detect_platform(url)
+    tpl      = os.path.join(DOWNLOAD_PATH, "%(id)s_%(title).60s.%(ext)s")
     downloaded = []
-    title      = "media"
+    title = "media"
 
-    logger.info(f"Début téléchargement | platform={platform} | format={format_type} | quality={quality} | url={url}")
+    logger.info(f"Début téléchargement | platform={platform} | format={format_type} | quality={quality}")
 
     def hook(d):
         if d["status"] == "finished":
             final = d.get("info_dict", {}).get("filepath") or d["filename"]
             downloaded.append(final)
             logger.info(f"Fichier téléchargé : {final}")
-        elif d["status"] == "error":
-            logger.error(f"Erreur hook yt-dlp : {d}")
 
-    common = {
-        **_common_opts(platform, hook),
-        "outtmpl": tpl,
+    # Options de base — simple comme l'ancien code
+    base_opts = {
+        "outtmpl":      tpl,
+        "quiet":        False,
+        "no_warnings":  False,
+        "progress_hooks": [hook],
     }
+
+    if PROXY_URL:
+        base_opts["proxy"] = PROXY_URL
+
+    # Cookies Instagram
+    if platform == "instagram" and _cookie_paths.get("instagram"):
+        base_opts["cookiefile"] = _cookie_paths["instagram"]
+        logger.info("Instagram : cookies activés")
+
+    # TikTok : impersonate + cookies
+    if platform == "tiktok":
+        base_opts["impersonate"] = "chrome"
+        if _cookie_paths.get("tiktok"):
+            base_opts["cookiefile"] = _cookie_paths["tiktok"]
+        logger.info("TikTok : impersonate chrome activé")
+
+    # YouTube : rien de spécial — yt-dlp gère seul
+    if platform == "youtube":
+        logger.info("YouTube : mode simple sans cookies")
 
     # ── MP3 ───────────────────────────────────────────────────────────────────
     if format_type == "mp3":
         opts = {
-            **common,
-            "format": "bestaudio[ext=m4a]/bestaudio/best",
+            **base_opts,
+            "format": "bestaudio/best",
             "postprocessors": [{
                 "key":              "FFmpegExtractAudio",
                 "preferredcodec":   "mp3",
@@ -158,13 +137,13 @@ def download_media(url: str, format_type: str = "mp4", quality: str = "best") ->
     # ── MP4 ───────────────────────────────────────────────────────────────────
     else:
         qmap = {
-            "best": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best[ext=mp4]/best",
-            "720":  "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=720]+bestaudio/best[height<=720][ext=mp4]/best[height<=720]/best",
-            "480":  "bestvideo[height<=480][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=480]+bestaudio/best[height<=480][ext=mp4]/best[height<=480]/best",
-            "360":  "bestvideo[height<=360][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=360]+bestaudio/best[height<=360][ext=mp4]/best[height<=360]/best",
+            "best": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
+            "720":  "bestvideo[height<=720][ext=mp4]+bestaudio/best[height<=720]",
+            "480":  "bestvideo[height<=480][ext=mp4]+bestaudio/best[height<=480]",
+            "360":  "bestvideo[height<=360][ext=mp4]+bestaudio/best[height<=360]",
         }
         opts = {
-            **common,
+            **base_opts,
             "format":              qmap.get(quality, qmap["best"]),
             "merge_output_format": "mp4",
         }
@@ -181,15 +160,13 @@ def download_media(url: str, format_type: str = "mp4", quality: str = "best") ->
         logger.error(f"Erreur inattendue [{platform}] format={format_type}: {e}")
         raise
 
-    # Chercher le fichier .mp4 final fusionné en priorité
+    # Chercher le fichier final
     path = next((f for f in reversed(downloaded) if f.endswith(".mp4")), None) \
            or (downloaded[-1] if downloaded else None)
 
-    logger.info(f"Chemin brut retourné par hook : {path}")
-
     if path and not os.path.exists(path):
         base = os.path.splitext(path)[0]
-        logger.warning(f"Fichier introuvable à {path}, recherche par extension...")
+        logger.warning(f"Fichier introuvable à {path}, recherche...")
         for ext in [".mp3", ".mp4", ".m4a", ".webm", ".mkv"]:
             candidate = base + ext
             if os.path.exists(candidate):
