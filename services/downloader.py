@@ -1,7 +1,7 @@
 """
 services/downloader.py
 """
-import yt_dlp, os, base64, logging, shutil
+import yt_dlp, os, base64, logging
 from config import DOWNLOAD_PATH, PROXY_URL, COOKIES_YOUTUBE, COOKIES_INSTAGRAM, COOKIES_TIKTOK
 
 logger = logging.getLogger(__name__)
@@ -50,13 +50,11 @@ def get_video_info(url: str) -> dict:
     platform = detect_platform(url)
     opts = {"quiet": True, "no_warnings": True, "skip_download": True}
 
-    # Cookies Instagram uniquement
     if platform == "instagram" and _cookie_paths.get("instagram"):
         opts["cookiefile"] = _cookie_paths["instagram"]
 
-    # TikTok : impersonate
     if platform == "tiktok":
-        opts["impersonate"] = "chrome"
+        opts["impersonate"] = "chrome110"
         if _cookie_paths.get("tiktok"):
             opts["cookiefile"] = _cookie_paths["tiktok"]
 
@@ -81,7 +79,7 @@ def get_video_info(url: str) -> dict:
 
 # ─── Téléchargement ───────────────────────────────────────────────────────────
 
-def download_media(url: str, format_type: str = "mp4", quality: str = "best") -> tuple[str | None, str]:
+def download_media(url: str, format_type: str = "mp4", quality: str = "720") -> tuple[str | None, str]:
     platform = detect_platform(url)
     tpl      = os.path.join(DOWNLOAD_PATH, "%(id)s_%(title).60s.%(ext)s")
     downloaded = []
@@ -91,34 +89,34 @@ def download_media(url: str, format_type: str = "mp4", quality: str = "best") ->
 
     def hook(d):
         if d["status"] == "finished":
-            final = d.get("info_dict", {}).get("filepath") or d["filename"]
-            downloaded.append(final)
-            logger.info(f"Fichier téléchargé : {final}")
+            downloaded.append(d["filename"])
+            logger.info(f"Fichier téléchargé : {d['filename']}")
+        elif d["status"] == "post_process":
+            final = d.get("info_dict", {}).get("filepath")
+            if final:
+                downloaded.append(final)
+                logger.info(f"Fichier final fusionné : {final}")
 
-    # Options de base — simple comme l'ancien code
     base_opts = {
-        "outtmpl":      tpl,
-        "quiet":        False,
-        "no_warnings":  False,
+        "outtmpl":        tpl,
+        "quiet":          False,
+        "no_warnings":    False,
         "progress_hooks": [hook],
     }
 
     if PROXY_URL:
         base_opts["proxy"] = PROXY_URL
 
-    # Cookies Instagram
     if platform == "instagram" and _cookie_paths.get("instagram"):
         base_opts["cookiefile"] = _cookie_paths["instagram"]
         logger.info("Instagram : cookies activés")
 
-    # TikTok : impersonate + cookies
     if platform == "tiktok":
-        base_opts["impersonate"] = "chrome"
+        base_opts["impersonate"] = "chrome110"
         if _cookie_paths.get("tiktok"):
             base_opts["cookiefile"] = _cookie_paths["tiktok"]
-        logger.info("TikTok : impersonate chrome activé")
+        logger.info("TikTok : impersonate chrome110 activé")
 
-    # YouTube : rien de spécial — yt-dlp gère seul
     if platform == "youtube":
         logger.info("YouTube : mode simple sans cookies")
 
@@ -136,15 +134,21 @@ def download_media(url: str, format_type: str = "mp4", quality: str = "best") ->
 
     # ── MP4 ───────────────────────────────────────────────────────────────────
     else:
-        qmap = {
-            "best": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
-            "720":  "bestvideo[height<=720][ext=mp4]+bestaudio/best[height<=720]",
-            "480":  "bestvideo[height<=480][ext=mp4]+bestaudio/best[height<=480]",
-            "360":  "bestvideo[height<=360][ext=mp4]+bestaudio/best[height<=360]",
-        }
+        if platform == "instagram":
+            # Instagram n'a qu'un seul format
+            fmt = "best[ext=mp4]/best"
+        else:
+            qmap = {
+                "1080": "bestvideo[height<=1080][ext=mp4]+bestaudio/best[height<=1080]",
+                "720":  "bestvideo[height<=720][ext=mp4]+bestaudio/best[height<=720]",
+                "480":  "bestvideo[height<=480][ext=mp4]+bestaudio/best[height<=480]",
+                "360":  "bestvideo[height<=360][ext=mp4]+bestaudio/best[height<=360]",
+            }
+            fmt = qmap.get(quality, qmap["720"])
+
         opts = {
             **base_opts,
-            "format":              qmap.get(quality, qmap["best"]),
+            "format":              fmt,
             "merge_output_format": "mp4",
         }
 
@@ -160,8 +164,9 @@ def download_media(url: str, format_type: str = "mp4", quality: str = "best") ->
         logger.error(f"Erreur inattendue [{platform}] format={format_type}: {e}")
         raise
 
-    # Chercher le fichier final
-    path = next((f for f in reversed(downloaded) if f.endswith(".mp4")), None) \
+    # Chercher le fichier final fusionné
+    path = next((f for f in reversed(downloaded) if f.endswith(".mp4") and os.path.exists(f)), None) \
+           or next((f for f in reversed(downloaded) if os.path.exists(f)), None) \
            or (downloaded[-1] if downloaded else None)
 
     if path and not os.path.exists(path):
