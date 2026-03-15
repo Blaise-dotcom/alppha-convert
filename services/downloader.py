@@ -1,156 +1,122 @@
-"""
-services/downloader.py
-"""
-import yt_dlp, os, base64, logging, re
-from yt_dlp.networking.impersonate import ImpersonateTarget
-from config import DOWNLOAD_PATH, PROXY_URL, COOKIES_YOUTUBE, COOKIES_INSTAGRAM, COOKIES_TIKTOK
+import time
+import logging
+from telegram import Update
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    MessageHandler,
+    CallbackQueryHandler,
+    PreCheckoutQueryHandler,
+    ConversationHandler,
+    filters,
+)
 
+from config import BOT_TOKEN
+from database import init_db
+
+import handlers.menu     as menu
+import handlers.download as dl
+import handlers.compress as cp
+import handlers.payment  as pay
+import handlers.admin    as adm
+
+logging.basicConfig(
+    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+    level=logging.INFO,
+)
 logger = logging.getLogger(__name__)
-os.makedirs(DOWNLOAD_PATH, exist_ok=True)
-
-def _write_cookie(b64_content: str, filename: str) -> str | None:
-    if not b64_content:
-        return None
-    try:
-        path = os.path.join("/tmp", filename)
-        with open(path, "wb") as f:
-            f.write(base64.b64decode(b64_content))
-        logger.info(f"Cookie écrit : {path}")
-        return path
-    except Exception as e:
-        logger.warning(f"Cookie write failed ({filename}): {e}")
-        return None
-
-_cookie_paths = {
-    "youtube":   _write_cookie(COOKIES_YOUTUBE,   "yt_cookies.txt"),
-    "instagram": _write_cookie(COOKIES_INSTAGRAM, "ig_cookies.txt"),
-    "tiktok":    _write_cookie(COOKIES_TIKTOK,    "tt_cookies.txt"),
-}
-
-logger.info(f"Cookies chargés: { {k: bool(v) for k, v in _cookie_paths.items()} }")
 
 
-def detect_platform(url: str) -> str | None:
-    u = url.lower()
-    if "youtube.com" in u or "youtu.be" in u:
-        return "youtube"
-    elif "instagram.com" in u:
-        return "instagram"
-    elif "tiktok.com" in u or "vm.tiktok.com" in u or "vt.tiktok.com" in u:
-        return "tiktok"
-    return None
+def build_app() -> Application:
+    app = Application.builder().token(BOT_TOKEN).build()
+
+    # ── Conversation : Téléchargement ────────────────────────────────────────
+    download_conv = ConversationHandler(
+        entry_points=[CallbackQueryHandler(dl.start_download, pattern="^download$")],
+        states={
+            dl.WAITING_LINK:    [MessageHandler(filters.TEXT & ~filters.COMMAND, dl.handle_link)],
+            dl.WAITING_FORMAT:  [CallbackQueryHandler(dl.handle_format,  pattern=r"^fmt_")],
+            dl.WAITING_QUALITY: [CallbackQueryHandler(dl.handle_quality, pattern=r"^qual_")],
+        },
+        fallbacks=[
+            CommandHandler("cancel", menu.cancel),
+            # Permet de quitter la conversation en cliquant sur n'importe quel bouton menu
+            CallbackQueryHandler(menu.show_menu,   pattern="^menu$"),
+            CallbackQueryHandler(pay.show_plans,   pattern="^premium$"),
+            CallbackQueryHandler(menu.show_usage,  pattern="^usage$"),
+            CallbackQueryHandler(menu.show_help,   pattern="^help$"),
+        ],
+        per_message=False,
+        allow_reentry=True,
+    )
+
+    # ── Conversation : Compression (maintenance) ─────────────────────────────
+    compress_conv = ConversationHandler(
+        entry_points=[CallbackQueryHandler(cp.start_compress, pattern="^compress$")],
+        states={
+            cp.WAITING_FILE:           [MessageHandler(filters.VIDEO | filters.Document.VIDEO, cp.handle_file)],
+            cp.WAITING_OUTPUT_FORMAT:  [CallbackQueryHandler(cp.handle_output_format,  pattern=r"^ofmt_")],
+            cp.WAITING_QUALITY_PRESET: [CallbackQueryHandler(cp.handle_quality_preset, pattern=r"^qpre_")],
+        },
+        fallbacks=[
+            CommandHandler("cancel", menu.cancel),
+            CallbackQueryHandler(menu.show_menu,  pattern="^menu$"),
+            CallbackQueryHandler(pay.show_plans,  pattern="^premium$"),
+        ],
+        per_message=False,
+        allow_reentry=True,
+    )
+
+    # ── Conversation : Admin ─────────────────────────────────────────────────
+    admin_conv = adm.build_admin_conv()
+
+    # ── Commandes ─────────────────────────────────────────────────────────────
+    app.add_handler(CommandHandler("start",   menu.start))
+    app.add_handler(CommandHandler("menu",    menu.show_menu))
+    app.add_handler(CommandHandler("premium", pay.show_plans))
+    app.add_handler(CommandHandler("cancel",  menu.cancel))
+    app.add_handler(CommandHandler("admin",   adm.admin_panel))
+
+    # ── Conversations ─────────────────────────────────────────────────────────
+    app.add_handler(download_conv)
+    app.add_handler(compress_conv)
+    app.add_handler(admin_conv)
+
+    # ── Callbacks menu ────────────────────────────────────────────────────────
+    app.add_handler(CallbackQueryHandler(menu.show_menu,  pattern="^menu$"))
+    app.add_handler(CallbackQueryHandler(menu.show_usage, pattern="^usage$"))
+    app.add_handler(CallbackQueryHandler(menu.show_help,  pattern="^help$"))
+
+    # ── Callbacks paiement ────────────────────────────────────────────────────
+    app.add_handler(CallbackQueryHandler(pay.show_plans,  pattern="^premium$"))
+    app.add_handler(CallbackQueryHandler(pay.select_plan, pattern=r"^plan_"))
+    app.add_handler(CallbackQueryHandler(pay.buy_stars,   pattern=r"^pay_stars_"))
+    app.add_handler(CallbackQueryHandler(pay.buy_ton,     pattern=r"^pay_ton_"))
+    app.add_handler(CallbackQueryHandler(pay.buy_usdt,    pattern=r"^pay_usdt_"))
+
+    # ── Callbacks admin ───────────────────────────────────────────────────────
+    app.add_handler(CallbackQueryHandler(adm.admin_callback, pattern="^adm_"))
+
+    # ── Stars : pre-checkout + confirmation ───────────────────────────────────
+    app.add_handler(PreCheckoutQueryHandler(pay.pre_checkout))
+    app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, pay.successful_payment))
+
+    # ── TON / USDT : vérification hash (plus utilisé mais gardé) ─────────────
+    app.add_handler(MessageHandler(filters.Regex(r"^tx:"),   pay.verify_ton))
+    app.add_handler(MessageHandler(filters.Regex(r"^usdt:"), pay.verify_usdt))
+
+    return app
 
 
-def get_video_info(url: str) -> dict:
-    platform = detect_platform(url)
-    opts = {"quiet": True, "no_warnings": True, "skip_download": True}
-
-    if platform == "instagram" and _cookie_paths.get("instagram"):
-        opts["cookiefile"] = _cookie_paths["instagram"]
-    if platform == "tiktok":
-        opts["impersonate"] = ImpersonateTarget("chrome")
-        if _cookie_paths.get("tiktok"):
-            opts["cookiefile"] = _cookie_paths["tiktok"]
-    if PROXY_URL:
-        opts["proxy"] = PROXY_URL
-
-    try:
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            info = ydl.extract_info(url, download=False)
-    except Exception as e:
-        logger.error(f"get_video_info error [{platform}] {url}: {e}")
-        raise
-
-    return {
-        "title":     info.get("title", "Vidéo"),
-        "duration":  info.get("duration", 0),
-        "thumbnail": info.get("thumbnail"),
-        "uploader":  info.get("uploader", ""),
-        "platform":  info.get("extractor_key", ""),
-    }
+def main():
+    logger.info("🚀 Démarrage de Alpha Convert...")
+    logger.info("⏳ Attente de 5s pour éviter les conflits de polling...")
+    time.sleep(5)
+    init_db()
+    app = build_app()
+    logger.info("✅ Bot lancé — en attente de messages")
+    app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 
-def download_media(url: str, format_type: str = "mp4", quality: str = "720") -> tuple[str | None, str]:
-    platform = detect_platform(url)
-    tpl      = os.path.join(DOWNLOAD_PATH, "%(id)s_%(title).60s.%(ext)s")
-    title    = "media"
-
-    logger.info(f"Début téléchargement | platform={platform} | format={format_type} | quality={quality}")
-
-    base_opts = {
-        "outtmpl":     tpl,
-        "quiet":       False,
-        "no_warnings": False,
-    }
-
-    if PROXY_URL:
-        base_opts["proxy"] = PROXY_URL
-    if platform == "instagram" and _cookie_paths.get("instagram"):
-        base_opts["cookiefile"] = _cookie_paths["instagram"]
-        logger.info("Instagram : cookies activés")
-    if platform == "tiktok":
-        base_opts["impersonate"] = ImpersonateTarget("chrome")
-        if _cookie_paths.get("tiktok"):
-            base_opts["cookiefile"] = _cookie_paths["tiktok"]
-        logger.info("TikTok : impersonate ImpersonateTarget(chrome)")
-    if platform == "youtube":
-        logger.info("YouTube : mode simple")
-
-    # ── MP3 ───────────────────────────────────────────────────────────────────
-    if format_type == "mp3":
-        opts = {
-            **base_opts,
-            "format": "bestaudio/best",
-            "postprocessors": [{
-                "key":              "FFmpegExtractAudio",
-                "preferredcodec":   "mp3",
-                "preferredquality": "192",
-            }],
-        }
-    # ── MP4 ───────────────────────────────────────────────────────────────────
-    else:
-        if platform == "instagram":
-            fmt = "best[ext=mp4]/best"
-        else:
-            qmap = {
-                "1080": "bestvideo[height<=1080][ext=mp4]+bestaudio/best[height<=1080]",
-                "720":  "bestvideo[height<=720][ext=mp4]+bestaudio/best[height<=720]",
-                "480":  "bestvideo[height<=480][ext=mp4]+bestaudio/best[height<=480]",
-                "360":  "bestvideo[height<=360][ext=mp4]+bestaudio/best[height<=360]",
-            }
-            fmt = qmap.get(quality, qmap["720"])
-
-        opts = {
-            **base_opts,
-            "format":              fmt,
-            "merge_output_format": "mp4",
-        }
-
-    try:
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            info  = ydl.extract_info(url, download=True)
-            title = info.get("title", "media")
-            path  = ydl.prepare_filename(info)
-            base  = re.sub(r'\.\w+$', '', path)
-            for ext in [".mp4", ".mp3", ".mkv", ".webm", ".m4a"]:
-                candidate = base + ext
-                if os.path.exists(candidate):
-                    logger.info(f"Téléchargement terminé : {candidate}")
-                    return candidate, title
-            video_id = info.get("id", "")
-            if video_id:
-                for f in os.listdir(DOWNLOAD_PATH):
-                    if f.startswith(video_id) and not f.endswith(('.part', '.ytdl')):
-                        full = os.path.join(DOWNLOAD_PATH, f)
-                        logger.info(f"Fichier trouvé par ID : {full}")
-                        return full, title
-
-            logger.error(f"Fichier introuvable après téléchargement. path={path}")
-            return None, title
-
-    except yt_dlp.utils.DownloadError as e:
-        logger.error(f"DownloadError [{platform}] format={format_type} quality={quality}: {e}")
-        raise
-    except Exception as e:
-        logger.error(f"Erreur inattendue [{platform}] format={format_type}: {e}")
-        raise
+if __name__ == "__main__":
+    main()
