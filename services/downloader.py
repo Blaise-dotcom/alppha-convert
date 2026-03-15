@@ -2,17 +2,24 @@
 services/downloader.py — yt-dlp avec cookies (YouTube + TikTok + Instagram)
 Les cookies sont stockés en base64 dans les variables d'environnement Railway.
 """
-import yt_dlp, os, base64, logging
+import yt_dlp, os, base64, logging, shutil
 from config import DOWNLOAD_PATH, PROXY_URL, COOKIES_YOUTUBE, COOKIES_INSTAGRAM, COOKIES_TIKTOK
 
 logger = logging.getLogger(__name__)
 os.makedirs(DOWNLOAD_PATH, exist_ok=True)
 
+# ─── Vérification Node.js (nécessaire pour résoudre les challenges YouTube) ───
+_node = shutil.which("node")
+if _node:
+    logger.info(f"✅ Node.js trouvé : {_node}")
+else:
+    logger.warning("⚠️ Node.js introuvable — les challenges YouTube risquent d'échouer")
+
 # ─── Écrire les cookies dans /tmp à chaque démarrage ─────────────────────────
 
 def _write_cookie(b64_content: str, filename: str) -> str | None:
     if not b64_content:
-        logger.warning(f"Cookie vide pour {filename}, téléchargement sans cookie.")
+        logger.warning(f"Cookie vide pour {filename}.")
         return None
     try:
         path = os.path.join("/tmp", filename)
@@ -51,25 +58,29 @@ def detect_platform(url: str) -> str | None:
 
 def _common_opts(platform: str | None, hook=None) -> dict:
     cookie_file = _cookie_paths.get(platform or "")
+
     opts = {
         "quiet":            False,
         "no_warnings":      False,
         "retries":          3,
         "fragment_retries": 3,
+        # Utiliser web_creator qui ne nécessite pas de challenge JS complexe
+        "extractor_args": {
+            "youtube": {
+                "player_client": ["web_creator", "web", "ios"],
+            }
+        },
     }
 
     if cookie_file:
-        # Avec cookies → laisser yt-dlp choisir le client automatiquement
-        # (ios et android ne supportent pas les cookies → ils seraient skippés)
         opts["cookiefile"] = cookie_file
         logger.info(f"Utilisation cookies {platform} : {cookie_file}")
     else:
-        # Sans cookies → forcer le client ios (pas de challenge JS requis)
-        opts["extractor_args"] = {"youtube": {"player_client": ["ios"]}}
-        logger.warning(f"Pas de cookie pour {platform}, client ios sans challenge JS.")
+        logger.warning(f"Pas de cookie pour {platform}.")
 
     if hook:
         opts["progress_hooks"] = [hook]
+
     if PROXY_URL:
         opts["proxy"] = PROXY_URL
         logger.info(f"Proxy utilisé : {PROXY_URL}")
@@ -137,7 +148,6 @@ def download_media(url: str, format_type: str = "mp4", quality: str = "best") ->
 
     # ── MP4 ───────────────────────────────────────────────────────────────────
     else:
-        # Merge video + audio séparément (YouTube ne distribue plus de mp4 direct)
         qmap = {
             "best": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best",
             "720":  "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=720]+bestaudio/best",
