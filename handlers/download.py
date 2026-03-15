@@ -124,7 +124,7 @@ async def handle_format(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["format"] = fmt
 
     if fmt == "mp3":
-        context.user_data["quality"] = "best"
+        context.user_data["quality"] = "720"
         await query.edit_message_text("⏳ Téléchargement MP3 en cours...")
         await _do_download(query.message, context, query.from_user.id)
         return ConversationHandler.END
@@ -146,7 +146,7 @@ async def handle_quality(update: Update, context: ContextTypes.DEFAULT_TYPE):
     quality = query.data.replace("qual_", "")
     context.user_data["quality"] = quality
 
-    labels = {"best": "Meilleure", "720": "720p HD", "480": "480p", "360": "360p"}
+    labels = {"1080": "1080p HD", "720": "720p", "480": "480p", "360": "360p"}
     await query.edit_message_text(
         f"⏳ Téléchargement en *{labels.get(quality, quality)}* en cours...\n"
         "_Ça peut prendre quelques secondes._",
@@ -161,7 +161,7 @@ async def handle_quality(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def _do_download(message, context: ContextTypes.DEFAULT_TYPE, user_id: int):
     url     = context.user_data["url"]
     fmt     = context.user_data.get("format", "mp4")
-    quality = context.user_data.get("quality", "best")
+    quality = context.user_data.get("quality", "720")
     premium = is_premium(user_id)
     max_mb  = PREMIUM_MAX_FILE_SIZE_MB if premium else FREE_MAX_FILE_SIZE_MB
 
@@ -231,8 +231,8 @@ def _format_keyboard() -> InlineKeyboardMarkup:
 
 def _quality_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🏆 Meilleure qualité",   callback_data="qual_best")],
-        [InlineKeyboardButton("📺 720p HD",             callback_data="qual_720")],
+        [InlineKeyboardButton("🔵 1080p HD",            callback_data="qual_1080")],
+        [InlineKeyboardButton("📺 720p",                callback_data="qual_720")],
         [InlineKeyboardButton("📱 480p",                callback_data="qual_480")],
         [InlineKeyboardButton("💨 360p (plus rapide)",  callback_data="qual_360")],
     ])
