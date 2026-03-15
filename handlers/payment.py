@@ -4,20 +4,27 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, Labeled
 from telegram.ext import ContextTypes
 from database import add_transaction, set_premium, complete_transaction, is_premium
 from config import (
-    STARS_PRICE_WEEKLY,
-    STARS_PRICE_MONTHLY,
-    TON_PRICE_WEEKLY,
-    TON_PRICE_MONTHLY,
-    TON_WALLET,
+    STARS_PRICE_1MONTH, STARS_PRICE_3MONTHS, STARS_PRICE_6MONTHS, STARS_PRICE_1YEAR,
+    TON_PRICE_1MONTH,   TON_PRICE_3MONTHS,   TON_PRICE_6MONTHS,   TON_PRICE_1YEAR,
+    USDT_PRICE_1MONTH,  USDT_PRICE_3MONTHS,  USDT_PRICE_6MONTHS,  USDT_PRICE_1YEAR,
+    TON_WALLET, USDT_WALLET, ADMIN_IDS,
 )
 
 logger = logging.getLogger(__name__)
+
+PLANS = {
+    "1month":  {"days": 30,  "label": "1 mois",   "stars": STARS_PRICE_1MONTH,  "ton": TON_PRICE_1MONTH,  "usdt": USDT_PRICE_1MONTH},
+    "3months": {"days": 90,  "label": "3 mois",   "stars": STARS_PRICE_3MONTHS, "ton": TON_PRICE_3MONTHS, "usdt": USDT_PRICE_3MONTHS},
+    "6months": {"days": 180, "label": "6 mois",   "stars": STARS_PRICE_6MONTHS, "ton": TON_PRICE_6MONTHS, "usdt": USDT_PRICE_6MONTHS},
+    "1year":   {"days": 365, "label": "1 an",     "stars": STARS_PRICE_1YEAR,   "ton": TON_PRICE_1YEAR,   "usdt": USDT_PRICE_1YEAR},
+    "lifetime":{"days": 99999,"label": "Illimité","stars": None,                "ton": None,               "usdt": None},
+}
 
 
 # ─── Affichage des plans ──────────────────────────────────────────────────────
 
 async def show_plans(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
+    query   = update.callback_query
     user_id = update.effective_user.id
 
     if query:
@@ -27,64 +34,93 @@ async def show_plans(update: Update, context: ContextTypes.DEFAULT_TYPE):
         send_fn = update.message.reply_text
 
     premium = is_premium(user_id)
-    badge   = "✅ Tu es déjà *Premium* !\n\n" if premium else ""
+    is_admin = user_id in ADMIN_IDS
+    badge = "✅ Tu es déjà *Premium* !\n\n" if premium else ""
 
     text = (
-        f"💎 *Plans Premium MediaBot Pro*\n\n"
+        f"⚡ *Alpha Convert — Plans Premium*\n\n"
         f"{badge}"
-        "✅ Téléchargements illimités\n"
-        "✅ Compressions illimitées\n"
-        "✅ Fichiers jusqu'à 500MB\n"
-        "✅ Priorité de traitement\n\n"
+        "🎯 *Avantages Premium :*\n"
+        "• Téléchargements illimités\n"
+        "• Fichiers jusqu'à 500MB\n"
+        "• Priorité de traitement\n"
+        "• Toutes qualités disponibles\n\n"
         "━━━━━━━━━━━━━━━━━━━\n"
-        f"📅 *Hebdomadaire*\n"
-        f"   ⭐ {STARS_PRICE_WEEKLY} Stars  ·  💎 {TON_PRICE_WEEKLY} TON\n\n"
-        f"📆 *Mensuel* _(meilleur rapport qualité/prix)_\n"
-        f"   ⭐ {STARS_PRICE_MONTHLY} Stars  ·  💎 {TON_PRICE_MONTHLY} TON\n"
-        "━━━━━━━━━━━━━━━━━━━"
+        f"📅 *1 mois*  →  {STARS_PRICE_1MONTH}⭐  |  {TON_PRICE_1MONTH} TON  |  {USDT_PRICE_1MONTH}$\n"
+        f"📦 *3 mois*  →  {STARS_PRICE_3MONTHS}⭐  |  {TON_PRICE_3MONTHS} TON  |  {USDT_PRICE_3MONTHS}$\n"
+        f"🏆 *6 mois*  →  {STARS_PRICE_6MONTHS}⭐  |  {TON_PRICE_6MONTHS} TON  |  {USDT_PRICE_6MONTHS}$\n"
+        f"👑 *1 an*    →  {STARS_PRICE_1YEAR}⭐  |  {TON_PRICE_1YEAR} TON  |  {USDT_PRICE_1YEAR}$\n"
+        "━━━━━━━━━━━━━━━━━━━\n\n"
+        "💳 *Méthodes de paiement :*\n"
+        "⭐ Telegram Stars\n"
+        "💎 TON\n"
+        "💵 USDT (TRC20 ou BEP20)\n"
     )
 
     keyboard = [
-        [
-            InlineKeyboardButton(f"⭐ {STARS_PRICE_WEEKLY} Stars — Semaine",  callback_data="buy_stars_weekly"),
-            InlineKeyboardButton(f"⭐ {STARS_PRICE_MONTHLY} Stars — Mois",    callback_data="buy_stars_monthly"),
-        ],
-        [
-            InlineKeyboardButton(f"💎 {TON_PRICE_WEEKLY} TON — Semaine",      callback_data="buy_ton_weekly"),
-            InlineKeyboardButton(f"💎 {TON_PRICE_MONTHLY} TON — Mois",        callback_data="buy_ton_monthly"),
-        ],
+        [InlineKeyboardButton("📅 1 mois",  callback_data="plan_1month"),
+         InlineKeyboardButton("📦 3 mois",  callback_data="plan_3months")],
+        [InlineKeyboardButton("🏆 6 mois",  callback_data="plan_6months"),
+         InlineKeyboardButton("👑 1 an",    callback_data="plan_1year")],
         [InlineKeyboardButton("⬅️ Retour", callback_data="menu")],
     ]
 
+    # Illimité visible uniquement pour les admins
+    if is_admin:
+        keyboard.insert(-1, [InlineKeyboardButton("♾️ Illimité (Admin)", callback_data="plan_lifetime")])
+
     await send_fn(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
+
+
+# ─── Choix du plan → choix méthode de paiement ───────────────────────────────
+
+async def select_plan(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    plan_key = query.data.replace("plan_", "")
+    plan     = PLANS[plan_key]
+    context.user_data["selected_plan"] = plan_key
+
+    text = (
+        f"💎 *Plan {plan['label']}*\n\n"
+        f"⭐ Stars : *{plan['stars']}*\n"
+        f"💎 TON : *{plan['ton']}*\n"
+        f"💵 USDT : *{plan['usdt']}$*\n\n"
+        "Choisis ta méthode de paiement :"
+    )
+
+    keyboard = [
+        [InlineKeyboardButton(f"⭐ Payer {plan['stars']} Stars", callback_data=f"pay_stars_{plan_key}")],
+        [InlineKeyboardButton(f"💎 Payer {plan['ton']} TON",     callback_data=f"pay_ton_{plan_key}")],
+        [InlineKeyboardButton(f"💵 Payer {plan['usdt']}$ USDT",  callback_data=f"pay_usdt_{plan_key}")],
+        [InlineKeyboardButton("⬅️ Retour aux plans",             callback_data="premium")],
+    ]
+
+    await query.edit_message_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
 
 
 # ─── Paiement Stars ───────────────────────────────────────────────────────────
 
 async def buy_stars(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
+    query    = update.callback_query
     await query.answer()
 
-    plan   = query.data.replace("buy_stars_", "")  # "weekly" ou "monthly"
-    price  = STARS_PRICE_WEEKLY if plan == "weekly" else STARS_PRICE_MONTHLY
-    label  = "1 semaine Premium" if plan == "weekly" else "1 mois Premium"
-    days   = 7 if plan == "weekly" else 30
+    plan_key = query.data.replace("pay_stars_", "")
+    plan     = PLANS[plan_key]
 
-    context.user_data["pending_stars_plan"] = plan
-    context.user_data["pending_stars_days"] = days
+    context.user_data["pending_stars_plan"] = plan_key
 
-    # Telegram Stars : currency = "XTR", amounts en entiers (pas de centimes)
     await query.message.reply_invoice(
-        title=       "MediaBot Pro — Premium",
-        description= f"{label} • Accès illimité à tous les outils",
-        payload=     f"premium_{plan}_{query.from_user.id}",
+        title=       f"Alpha Convert — Premium {plan['label']}",
+        description= f"Accès Premium {plan['label']} • Téléchargements illimités",
+        payload=     f"premium_{plan_key}_{query.from_user.id}",
         currency=    "XTR",
-        prices=      [LabeledPrice(label, price)],
-        # photo_url= "https://..." (optionnel)
+        prices=      [LabeledPrice(f"Premium {plan['label']}", plan["stars"])],
     )
 
 
-# ─── Pre-checkout query (obligatoire pour Telegram Stars) ────────────────────
+# ─── Pre-checkout Stars ───────────────────────────────────────────────────────
 
 async def pre_checkout(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.pre_checkout_query.answer(ok=True)
@@ -94,14 +130,16 @@ async def pre_checkout(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def successful_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    payload = update.message.successful_payment.invoice_payload  # "premium_weekly_123"
-    amount  = update.message.successful_payment.total_amount     # en Stars
+    payload = update.message.successful_payment.invoice_payload
+    amount  = update.message.successful_payment.total_amount
 
-    plan = "weekly" if "weekly" in payload else "monthly"
-    days = 7 if plan == "weekly" else 30
-    until = date.today() + timedelta(days=days)
+    # Extraire le plan depuis le payload "premium_1month_123"
+    parts    = payload.split("_")
+    plan_key = parts[1] if len(parts) > 1 else "1month"
+    plan     = PLANS.get(plan_key, PLANS["1month"])
+    until    = date.today() + timedelta(days=plan["days"])
 
-    add_transaction(user_id, plan, "XTR", amount)
+    add_transaction(user_id, plan_key, "XTR", amount)
     set_premium(user_id, until)
 
     from handlers.menu import main_keyboard
@@ -114,71 +152,115 @@ async def successful_payment(update: Update, context: ContextTypes.DEFAULT_TYPE)
     )
 
 
-# ─── Paiement TON ─────────────────────────────────────────────────────────────
+# ─── Paiement TON ────────────────────────────────────────────────────────────
 
 async def buy_ton(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
+    query    = update.callback_query
     await query.answer()
 
-    plan  = query.data.replace("buy_ton_", "")
-    price = TON_PRICE_WEEKLY if plan == "weekly" else TON_PRICE_MONTHLY
-    label = "1 semaine" if plan == "weekly" else "1 mois"
-
-    context.user_data["pending_ton_plan"] = plan
+    plan_key = query.data.replace("pay_ton_", "")
+    plan     = PLANS[plan_key]
+    context.user_data["pending_ton_plan"] = plan_key
 
     await query.edit_message_text(
-        f"💎 *Paiement TON — {label} Premium*\n\n"
-        f"1️⃣ Envoie exactement *{price} TON* à cette adresse :\n"
+        f"💎 *Paiement TON — {plan['label']}*\n\n"
+        f"1️⃣ Envoie exactement *{plan['ton']} TON* à cette adresse :\n"
         f"`{TON_WALLET}`\n\n"
-        f"2️⃣ Une fois le paiement effectué, envoie-moi le hash de la transaction ici dans ce format :\n"
+        f"2️⃣ Une fois payé, envoie le hash de la transaction :\n"
         f"`tx:HASH_ICI`\n\n"
-        f"_Exemple :_\n`tx:3a8f2b...`\n\n"
-        f"⚠️ Envoie exactement *{price} TON* — montant incorrect = non traité.",
+        f"_Exemple : `tx:3a8f2b...`_\n\n"
+        f"⚠️ Envoie exactement *{plan['ton']} TON* — montant incorrect = non traité.",
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("⬅️ Retour aux plans", callback_data="premium")]
+            [InlineKeyboardButton("⬅️ Retour", callback_data=f"plan_{plan_key}")]
         ]),
     )
 
 
-# ─── Vérification du hash TON ─────────────────────────────────────────────────
+# ─── Paiement USDT ───────────────────────────────────────────────────────────
+
+async def buy_usdt(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query    = update.callback_query
+    await query.answer()
+
+    plan_key = query.data.replace("pay_usdt_", "")
+    plan     = PLANS[plan_key]
+    context.user_data["pending_usdt_plan"] = plan_key
+
+    await query.edit_message_text(
+        f"💵 *Paiement USDT — {plan['label']}*\n\n"
+        f"1️⃣ Envoie exactement *{plan['usdt']}$ USDT* à cette adresse :\n"
+        f"`{USDT_WALLET}`\n\n"
+        f"📌 *Réseaux acceptés :* TRC20 ou BEP20\n\n"
+        f"2️⃣ Une fois payé, envoie le hash de la transaction :\n"
+        f"`usdt:HASH_ICI`\n\n"
+        f"_Exemple : `usdt:3a8f2b...`_\n\n"
+        f"⚠️ Envoie exactement *{plan['usdt']}$* — montant incorrect = non traité.",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("⬅️ Retour", callback_data=f"plan_{plan_key}")]
+        ]),
+    )
+
+
+# ─── Vérification hash TON ────────────────────────────────────────────────────
 
 async def verify_ton(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """L'utilisateur envoie 'tx:HASH' pour déclarer son paiement TON."""
     text    = update.message.text.strip()
-    tx_hash = text[3:].strip()  # retire le préfixe "tx:"
+    tx_hash = text[3:].strip()
+    user_id = update.effective_user.id
 
     if len(tx_hash) < 10:
         await update.message.reply_text(
-            "❌ Hash invalide. Assure-toi d'envoyer :\n`tx:HASH_DE_LA_TRANSACTION`",
+            "❌ Hash invalide. Format attendu :\n`tx:HASH_DE_LA_TRANSACTION`",
             parse_mode="Markdown",
         )
         return
 
-    user_id = update.effective_user.id
-    plan    = context.user_data.get("pending_ton_plan", "monthly")
-    price   = TON_PRICE_WEEKLY if plan == "weekly" else TON_PRICE_MONTHLY
-    days    = 7 if plan == "weekly" else 30
-    until   = date.today() + timedelta(days=days)
+    plan_key = context.user_data.get("pending_ton_plan", "1month")
+    plan     = PLANS.get(plan_key, PLANS["1month"])
+    until    = date.today() + timedelta(days=plan["days"])
 
-    # ──────────────────────────────────────────────────────────────────────────
-    # 🔧 EN PRODUCTION : vérifier le tx sur la blockchain TON via TonCenter API
-    #
-    # import httpx
-    # r = httpx.get(f"https://toncenter.com/api/v2/getTransaction?tx_hash={tx_hash}")
-    # data = r.json()
-    # Vérifier : montant == price, destination == TON_WALLET, statut == OK
-    # ──────────────────────────────────────────────────────────────────────────
-
-    # Pour la version MVP on accepte tous les hashs (à remplacer par la vraie vérification)
-    tx_id = add_transaction(user_id, plan, "TON", price, tx_hash)
+    tx_id = add_transaction(user_id, plan_key, "TON", plan["ton"], tx_hash)
     complete_transaction(tx_id)
     set_premium(user_id, until)
 
     from handlers.menu import main_keyboard
     await update.message.reply_text(
         f"✅ *Paiement TON enregistré !*\n\n"
-        f"💎 Tu es maintenant *Premium* jusqu'au *{until.strftime('%d/%m/%Y')}*\n"
+        f"💎 Premium activé jusqu'au *{until.strftime('%d/%m/%Y')}*\n"
+        f"🚀 Accès illimité activé !",
+        parse_mode="Markdown",
+        reply_markup=main_keyboard(),
+    )
+
+
+# ─── Vérification hash USDT ──────────────────────────────────────────────────
+
+async def verify_usdt(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text    = update.message.text.strip()
+    tx_hash = text[5:].strip()
+    user_id = update.effective_user.id
+
+    if len(tx_hash) < 10:
+        await update.message.reply_text(
+            "❌ Hash invalide. Format attendu :\n`usdt:HASH_DE_LA_TRANSACTION`",
+            parse_mode="Markdown",
+        )
+        return
+
+    plan_key = context.user_data.get("pending_usdt_plan", "1month")
+    plan     = PLANS.get(plan_key, PLANS["1month"])
+    until    = date.today() + timedelta(days=plan["days"])
+
+    tx_id = add_transaction(user_id, plan_key, "USDT", plan["usdt"], tx_hash)
+    complete_transaction(tx_id)
+    set_premium(user_id, until)
+
+    from handlers.menu import main_keyboard
+    await update.message.reply_text(
+        f"✅ *Paiement USDT enregistré !*\n\n"
+        f"💎 Premium activé jusqu'au *{until.strftime('%d/%m/%Y')}*\n"
         f"🚀 Accès illimité activé !",
         parse_mode="Markdown",
         reply_markup=main_keyboard(),
