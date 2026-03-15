@@ -13,19 +13,26 @@ from config import (
 
 logger = logging.getLogger(__name__)
 
-# ─── États de la conversation ─────────────────────────────────────────────────
 WAITING_LINK    = 10
 WAITING_FORMAT  = 11
 WAITING_QUALITY = 12
 
 
-# ─── Entrée ───────────────────────────────────────────────────────────────────
+def _safe(text: str) -> str:
+    """Échappe les caractères Markdown spéciaux dans un texte utilisateur."""
+    for ch in ["_", "*", "[", "]", "`"]:
+        text = text.replace(ch, f"\\{ch}")
+    return text
+
 
 async def start_download(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     user_id = query.from_user.id
     ensure_user(user_id, query.from_user.username, query.from_user.first_name)
+
+    # Nettoyer l'état précédent si l'utilisateur reclique sur Télécharger
+    context.user_data.clear()
 
     usage   = get_usage(user_id)
     premium = is_premium(user_id)
@@ -51,17 +58,15 @@ async def start_download(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "📥 *Téléchargement de média*\n\n"
         "Envoie-moi le lien de la vidéo :\n\n"
         "🔴 YouTube\n"
-        "📸 Instagram (posts, reels)\n"
+        "📸 Instagram \\(posts, reels\\)\n"
         "🎵 TikTok\n\n"
         f"📊 Quota aujourd'hui : *{remaining}*\n"
         f"📁 Taille max : *{max_size}MB*\n\n"
-        "_(Envoie /cancel pour annuler)_",
-        parse_mode="Markdown",
+        "_Envoie /cancel pour annuler_",
+        parse_mode="MarkdownV2",
     )
     return WAITING_LINK
 
-
-# ─── Réception du lien ────────────────────────────────────────────────────────
 
 async def handle_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
     url      = update.message.text.strip()
@@ -82,39 +87,35 @@ async def handle_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["platform"] = platform
 
     emoji_map = {"youtube": "🔴", "instagram": "📸", "tiktok": "🎵"}
-    msg = await update.message.reply_text(f"{emoji_map[platform]} Analyse du lien...")
+    msg = await update.message.reply_text(f"{emoji_map[platform]} Analyse du lien en cours...")
 
     try:
         loop = asyncio.get_event_loop()
         info = await loop.run_in_executor(None, get_video_info, url)
         context.user_data["video_info"] = info
 
-        dur = info["duration"]
+        dur     = info["duration"]
         dur_str = f"{int(dur)//60}:{int(dur)%60:02d}" if dur else "?"
         title   = info["title"][:50] + ("…" if len(info["title"]) > 50 else "")
 
         await msg.edit_text(
-            f"✅ *Vidéo trouvée !*\n\n"
+            f"✅ Vidéo trouvée !\n\n"
             f"📌 {title}\n"
             f"⏱ Durée : {dur_str}\n"
             f"👤 {info['uploader']}\n\n"
-            "*Choisis le format :*",
-            parse_mode="Markdown",
+            "Choisis le format :",
             reply_markup=_format_keyboard(),
         )
     except Exception as e:
         logger.warning(f"Impossible de lire les infos : {e}")
         await msg.edit_text(
-            "⚠️ Je n'arrive pas à lire les infos, mais je vais quand même essayer.\n\n"
-            "*Choisis le format :*",
-            parse_mode="Markdown",
+            "⚠️ Infos non disponibles, je vais quand même essayer.\n\n"
+            "Choisis le format :",
             reply_markup=_format_keyboard(),
         )
 
     return WAITING_FORMAT
 
-
-# ─── Choix du format ──────────────────────────────────────────────────────────
 
 async def handle_format(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -125,19 +126,16 @@ async def handle_format(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if fmt == "mp3":
         context.user_data["quality"] = "720"
-        await query.edit_message_text("⏳ Téléchargement MP3 en cours...")
+        await query.edit_message_text("⏳ Téléchargement MP3 en cours...\n_Ça peut prendre quelques secondes._", parse_mode="Markdown")
         await _do_download(query.message, context, query.from_user.id)
         return ConversationHandler.END
 
     await query.edit_message_text(
-        "🎬 *Choisis la qualité vidéo :*",
-        parse_mode="Markdown",
+        "🎬 Choisis la qualité vidéo :",
         reply_markup=_quality_keyboard(),
     )
     return WAITING_QUALITY
 
-
-# ─── Choix de la qualité vidéo ────────────────────────────────────────────────
 
 async def handle_quality(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -148,59 +146,74 @@ async def handle_quality(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     labels = {"1080": "1080p HD", "720": "720p", "480": "480p", "360": "360p"}
     await query.edit_message_text(
-        f"⏳ Téléchargement en *{labels.get(quality, quality)}* en cours...\n"
-        "_Ça peut prendre quelques secondes._",
-        parse_mode="Markdown",
+        f"⏳ Téléchargement en {labels.get(quality, quality)} en cours...\n"
+        "Ça peut prendre quelques secondes.",
     )
     await _do_download(query.message, context, query.from_user.id)
     return ConversationHandler.END
 
 
-# ─── Téléchargement effectif ──────────────────────────────────────────────────
-
 async def _do_download(message, context: ContextTypes.DEFAULT_TYPE, user_id: int):
-    url     = context.user_data["url"]
+    url     = context.user_data.get("url", "")
     fmt     = context.user_data.get("format", "mp4")
     quality = context.user_data.get("quality", "720")
     premium = is_premium(user_id)
     max_mb  = PREMIUM_MAX_FILE_SIZE_MB if premium else FREE_MAX_FILE_SIZE_MB
+
+    # Envoyer l'action "upload" pour montrer que le bot travaille
+    try:
+        await message.get_bot().send_chat_action(
+            chat_id=message.chat_id,
+            action="upload_video" if fmt != "mp3" else "upload_voice"
+        )
+    except Exception:
+        pass
 
     try:
         loop = asyncio.get_event_loop()
         file_path, title = await loop.run_in_executor(None, download_media, url, fmt, quality)
 
         if not file_path or not os.path.exists(file_path):
-            await message.reply_text("❌ Téléchargement échoué. Lien invalide ou vidéo privée.")
+            await message.reply_text(
+                "❌ Téléchargement échoué.\n"
+                "La vidéo est peut-être privée ou le lien a expiré."
+            )
             return
 
         size_mb = os.path.getsize(file_path) / (1024 * 1024)
 
         if size_mb > max_mb:
             os.remove(file_path)
-            tip = "\n💎 Passe en *Premium* pour des fichiers jusqu'à 500MB !" if not premium else ""
+            tip = "\n\n💎 Passe en Premium pour des fichiers jusqu'à 500MB !" if not premium else ""
             await message.reply_text(
-                f"❌ *Fichier trop lourd !*\n\n"
-                f"Taille : {size_mb:.1f}MB | Limite : {max_mb}MB{tip}",
-                parse_mode="Markdown",
+                f"❌ Fichier trop lourd !\n\n"
+                f"Taille : {size_mb:.1f}MB\nLimite : {max_mb}MB{tip}"
             )
             return
 
-        caption = f"🎬 _{title[:100]}_\n\n_Via MediaBot Pro_ ✨"
+        # Envoyer l'action upload pendant l'envoi du fichier
+        try:
+            await message.get_bot().send_chat_action(
+                chat_id=message.chat_id,
+                action="upload_video" if fmt != "mp3" else "upload_voice"
+            )
+        except Exception:
+            pass
+
+        safe_title = title[:100].replace("<", "").replace(">", "").replace("&", "and")
 
         with open(file_path, "rb") as f:
             if fmt == "mp3":
                 await message.reply_audio(
                     f,
-                    title=title[:64],
-                    filename=f"{title[:50]}.mp3",
-                    caption="_Via MediaBot Pro_ ✨",
-                    parse_mode="Markdown",
+                    title=safe_title[:64],
+                    filename=f"{safe_title[:50]}.mp3",
+                    caption="Via Alpha Convert ✨",
                 )
             else:
                 await message.reply_video(
                     f,
-                    caption=caption,
-                    parse_mode="Markdown",
+                    caption=f"🎬 {safe_title}\n\nVia Alpha Convert ✨",
                     supports_streaming=True,
                 )
 
@@ -208,17 +221,26 @@ async def _do_download(message, context: ContextTypes.DEFAULT_TYPE, user_id: int
         os.remove(file_path)
 
         from handlers.menu import main_keyboard
-        await message.reply_text("✅ *Téléchargement terminé !*", parse_mode="Markdown", reply_markup=main_keyboard())
+        await message.reply_text(
+            "✅ Téléchargement terminé !",
+            reply_markup=main_keyboard()
+        )
 
     except Exception as e:
         logger.error(f"Erreur download : {e}")
+        # Nettoyer le fichier si il existe
+        try:
+            if 'file_path' in locals() and file_path and os.path.exists(file_path):
+                os.remove(file_path)
+        except Exception:
+            pass
+        from handlers.menu import main_keyboard
         await message.reply_text(
             "❌ Erreur lors du téléchargement.\n"
-            "Vérifie que la vidéo est publique et réessaie."
+            "Vérifie que la vidéo est publique et réessaie.",
+            reply_markup=main_keyboard()
         )
 
-
-# ─── Claviers ─────────────────────────────────────────────────────────────────
 
 def _format_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
@@ -231,8 +253,8 @@ def _format_keyboard() -> InlineKeyboardMarkup:
 
 def _quality_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🔵 1080p HD",            callback_data="qual_1080")],
-        [InlineKeyboardButton("📺 720p",                callback_data="qual_720")],
-        [InlineKeyboardButton("📱 480p",                callback_data="qual_480")],
-        [InlineKeyboardButton("💨 360p (plus rapide)",  callback_data="qual_360")],
+        [InlineKeyboardButton("🔵 1080p HD",           callback_data="qual_1080")],
+        [InlineKeyboardButton("📺 720p",               callback_data="qual_720")],
+        [InlineKeyboardButton("📱 480p",               callback_data="qual_480")],
+        [InlineKeyboardButton("💨 360p (plus rapide)", callback_data="qual_360")],
     ])
