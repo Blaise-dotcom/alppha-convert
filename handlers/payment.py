@@ -117,7 +117,7 @@ async def buy_stars(update: Update, context: ContextTypes.DEFAULT_TYPE):
         description= f"Accès Premium {plan['label']} • Téléchargements illimités",
         payload=     f"premium_{plan_key}_{query.from_user.id}",
         currency=    "XTR",
-        prices=      [LabeledPrice(f"Premium {plan['label']}", plan["stars"])],
+        prices=      [LabeledPrice(f"Premium {plan['label']}", int(plan["stars"]))],
     )
 
 
