@@ -17,6 +17,7 @@ import handlers.menu    as menu
 import handlers.download as dl
 import handlers.compress as cp
 import handlers.payment  as pay
+import handlers.admin    as adm
 
 logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
@@ -58,15 +59,20 @@ def build_app() -> Application:
         per_message=False,
     )
 
+    # ── Conversation : Admin (donner/révoquer premium) ───────────────────────
+    admin_conv = adm.build_admin_conv()
+
     # ── Commandes ─────────────────────────────────────────────────────────────
     app.add_handler(CommandHandler("start",   menu.start))
-    app.add_handler(CommandHandler("menu",    menu.show_menu))   # type: ignore
-    app.add_handler(CommandHandler("premium", pay.show_plans))   # type: ignore
+    app.add_handler(CommandHandler("menu",    menu.show_menu))
+    app.add_handler(CommandHandler("premium", pay.show_plans))
     app.add_handler(CommandHandler("cancel",  menu.cancel))
+    app.add_handler(CommandHandler("admin",   adm.admin_panel))
 
     # ── Conversations ─────────────────────────────────────────────────────────
     app.add_handler(download_conv)
     app.add_handler(compress_conv)
+    app.add_handler(admin_conv)
 
     # ── Callbacks menu ────────────────────────────────────────────────────────
     app.add_handler(CallbackQueryHandler(menu.show_menu,  pattern="^menu$"))
@@ -77,6 +83,9 @@ def build_app() -> Application:
     app.add_handler(CallbackQueryHandler(pay.show_plans, pattern="^premium$"))
     app.add_handler(CallbackQueryHandler(pay.buy_stars,  pattern=r"^buy_stars_"))
     app.add_handler(CallbackQueryHandler(pay.buy_ton,    pattern=r"^buy_ton_"))
+
+    # ── Callbacks admin ───────────────────────────────────────────────────────
+    app.add_handler(CallbackQueryHandler(adm.admin_callback, pattern="^adm_"))
 
     # ── Stars : pre-checkout + confirmation ───────────────────────────────────
     app.add_handler(PreCheckoutQueryHandler(pay.pre_checkout))
@@ -89,7 +98,7 @@ def build_app() -> Application:
 
 
 def main():
-    logger.info("🚀 Démarrage de MediaBot Pro...")
+    logger.info("🚀 Démarrage de Alpha Convert...")
     init_db()
     app = build_app()
     logger.info("✅ Bot lancé — en attente de messages")
