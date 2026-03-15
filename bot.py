@@ -14,7 +14,7 @@ from telegram.ext import (
 from config import BOT_TOKEN
 from database import init_db
 
-import handlers.menu    as menu
+import handlers.menu     as menu
 import handlers.download as dl
 import handlers.compress as cp
 import handlers.payment  as pay
@@ -42,25 +42,19 @@ def build_app() -> Application:
         per_message=False,
     )
 
-    # ── Conversation : Compression ───────────────────────────────────────────
+    # ── Conversation : Compression (maintenance) ─────────────────────────────
     compress_conv = ConversationHandler(
         entry_points=[CallbackQueryHandler(cp.start_compress, pattern="^compress$")],
         states={
-            cp.WAITING_FILE: [
-                MessageHandler(filters.VIDEO | filters.Document.VIDEO, cp.handle_file)
-            ],
-            cp.WAITING_OUTPUT_FORMAT: [
-                CallbackQueryHandler(cp.handle_output_format, pattern=r"^ofmt_")
-            ],
-            cp.WAITING_QUALITY_PRESET: [
-                CallbackQueryHandler(cp.handle_quality_preset, pattern=r"^qpre_")
-            ],
+            cp.WAITING_FILE:           [MessageHandler(filters.VIDEO | filters.Document.VIDEO, cp.handle_file)],
+            cp.WAITING_OUTPUT_FORMAT:  [CallbackQueryHandler(cp.handle_output_format,  pattern=r"^ofmt_")],
+            cp.WAITING_QUALITY_PRESET: [CallbackQueryHandler(cp.handle_quality_preset, pattern=r"^qpre_")],
         },
         fallbacks=[CommandHandler("cancel", menu.cancel)],
         per_message=False,
     )
 
-    # ── Conversation : Admin (donner/révoquer premium) ───────────────────────
+    # ── Conversation : Admin ─────────────────────────────────────────────────
     admin_conv = adm.build_admin_conv()
 
     # ── Commandes ─────────────────────────────────────────────────────────────
@@ -81,9 +75,11 @@ def build_app() -> Application:
     app.add_handler(CallbackQueryHandler(menu.show_help,  pattern="^help$"))
 
     # ── Callbacks paiement ────────────────────────────────────────────────────
-    app.add_handler(CallbackQueryHandler(pay.show_plans, pattern="^premium$"))
-    app.add_handler(CallbackQueryHandler(pay.buy_stars,  pattern=r"^buy_stars_"))
-    app.add_handler(CallbackQueryHandler(pay.buy_ton,    pattern=r"^buy_ton_"))
+    app.add_handler(CallbackQueryHandler(pay.show_plans,  pattern="^premium$"))
+    app.add_handler(CallbackQueryHandler(pay.select_plan, pattern=r"^plan_"))
+    app.add_handler(CallbackQueryHandler(pay.buy_stars,   pattern=r"^pay_stars_"))
+    app.add_handler(CallbackQueryHandler(pay.buy_ton,     pattern=r"^pay_ton_"))
+    app.add_handler(CallbackQueryHandler(pay.buy_usdt,    pattern=r"^pay_usdt_"))
 
     # ── Callbacks admin ───────────────────────────────────────────────────────
     app.add_handler(CallbackQueryHandler(adm.admin_callback, pattern="^adm_"))
@@ -92,15 +88,17 @@ def build_app() -> Application:
     app.add_handler(PreCheckoutQueryHandler(pay.pre_checkout))
     app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, pay.successful_payment))
 
-    # ── TON : vérification du hash ────────────────────────────────────────────
+    # ── TON : vérification hash ───────────────────────────────────────────────
     app.add_handler(MessageHandler(filters.Regex(r"^tx:"), pay.verify_ton))
+
+    # ── USDT : vérification hash ──────────────────────────────────────────────
+    app.add_handler(MessageHandler(filters.Regex(r"^usdt:"), pay.verify_usdt))
 
     return app
 
 
 def main():
     logger.info("🚀 Démarrage de Alpha Convert...")
-    # Attendre que l'ancienne instance se déconnecte (évite le conflit Telegram)
     logger.info("⏳ Attente de 5s pour éviter les conflits de polling...")
     time.sleep(5)
     init_db()
