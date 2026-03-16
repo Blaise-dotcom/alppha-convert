@@ -45,6 +45,8 @@ def get_video_info(url: str) -> dict:
     platform = detect_platform(url)
     opts = {"quiet": True, "no_warnings": True, "skip_download": True}
 
+    if platform == "youtube" and _cookie_paths.get("youtube"):
+        opts["cookiefile"] = _cookie_paths["youtube"]
     if platform == "instagram" and _cookie_paths.get("instagram"):
         opts["cookiefile"] = _cookie_paths["instagram"]
     if platform == "tiktok":
@@ -97,6 +99,9 @@ def download_media(url: str, format_type: str = "mp4", quality: str = "720") -> 
         logger.info("TikTok : impersonate chrome")
     if platform == "youtube":
         logger.info("YouTube : mode simple")
+        if _cookie_paths.get("youtube"):
+            base_opts["cookiefile"] = _cookie_paths["youtube"]
+            logger.info("YouTube : cookies activés")
 
     # ── MP3 ───────────────────────────────────────────────────────────────────
     if format_type == "mp3":
