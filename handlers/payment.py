@@ -13,7 +13,7 @@ from config import (
 logger = logging.getLogger(__name__)
 
 # ⬇️ Mets ici le @username de ton bot support
-SUPPORT_BOT_USERNAME = "https://t.me/AlphaConvertSupport_bot"
+SUPPORT_BOT_USERNAME = "@AlphaConvertSupport_bot"
 
 PLANS = {
     "1month":  {"days": 30,    "label": "1 mois",   "stars": STARS_PRICE_1MONTH,  "ton": TON_PRICE_1MONTH,  "usdt": USDT_PRICE_1MONTH},
