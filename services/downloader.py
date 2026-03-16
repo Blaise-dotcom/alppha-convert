@@ -43,7 +43,7 @@ def detect_platform(url: str) -> str | None:
 
 def get_video_info(url: str) -> dict:
     platform = detect_platform(url)
-    opts = {"quiet": True, "no_warnings": True, "skip_download": True, "extractor_args": {"youtube": {"js_runtimes": ["nodejs"]}}}
+    opts = {"quiet": True, "no_warnings": True, "skip_download": True, "extractor_args": {"youtube": {"player_client": ["android", "web"]}}}
 
     if platform == "youtube" and _cookie_paths.get("youtube"):
         opts["cookiefile"] = _cookie_paths["youtube"]
@@ -85,7 +85,7 @@ def download_media(url: str, format_type: str = "mp4", quality: str = "720") -> 
         "no_warnings": False,
         # Fallback automatique si le format exact n'existe pas
         "ignoreerrors": False,
-        "extractor_args": {"youtube": {"js_runtimes": ["nodejs"]}},
+        "extractor_args": {"youtube": {"player_client": ["android", "web"]}},
     }
 
     if PROXY_URL:
