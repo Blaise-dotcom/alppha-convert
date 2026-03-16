@@ -1,8 +1,5 @@
 [phases.setup]
 nixPkgs = ["python311", "ffmpeg", "nodejs_20"]
 
-[phases.build]
-cmds = ["npm install -g @yt-dlp/ejs-runner"]
-
 [start]
 cmd = "python bot.py"
