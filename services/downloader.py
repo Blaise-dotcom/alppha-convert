@@ -108,19 +108,16 @@ def _rapi_info(url: str, platform: str) -> dict | None:
                         "platform": "tiktok"}
 
         elif platform == "instagram":
-            r = httpx.post(
-                "https://instagram120.p.rapidapi.com/api/instagram/links",
-                json={"url": url},
-                headers={"X-RapidAPI-Key": key, "X-RapidAPI-Host": "instagram120.p.rapidapi.com",
-                         "Content-Type": "application/json"},
+            r = httpx.get(
+                "https://instagram120.p.rapidapi.com/api/instagram/hls",
+                params={"url": url},
+                headers={"X-RapidAPI-Key": key, "X-RapidAPI-Host": "instagram120.p.rapidapi.com"},
                 timeout=15,
             )
+            logger.info(f"Instagram120 hls info: {r.status_code} | {r.text[:200]}")
             if r.status_code == 200:
-                d = r.json()
-                links = d if isinstance(d, list) else d.get("links", [])
-                if links:
-                    return {"title": "Vidéo Instagram", "duration": 0,
-                            "thumbnail": None, "uploader": "Instagram", "platform": "instagram"}
+                return {"title": "Video Instagram", "duration": 0,
+                        "thumbnail": None, "uploader": "Instagram", "platform": "instagram"}
 
     except Exception as e:
         logger.warning(f"RapidAPI info [{platform}]: {e}")
