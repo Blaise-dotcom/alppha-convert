@@ -1,346 +1,252 @@
-// ── CONFIG ──────────────────────────────────────────────────
-const BACKEND = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
-  ? 'http://localhost:8000'
-  : 'https://alphaconvert-web-production.up.railway.app';
+import os
+import asyncio
+import logging
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import ContextTypes, ConversationHandler
+from database import get_usage, increment_usage, is_premium, ensure_user
+from services.downloader import detect_platform, download_media, get_video_info
+from config import (
+    FREE_DOWNLOADS_PER_DAY,
+    FREE_MAX_FILE_SIZE_MB,
+    PREMIUM_MAX_FILE_SIZE_MB,
+)
 
-const DAILY_LIMIT = 3;
+logger = logging.getLogger(__name__)
 
-// ── FIREBASE ─────────────────────────────────────────────────
-import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
-import { getFirestore, doc, getDoc, setDoc, updateDoc, increment, collection }
-  from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
+WAITING_LINK    = 10
+WAITING_FORMAT  = 11
+WAITING_QUALITY = 12
 
-const firebaseConfig = {
-  apiKey: "AIzaSyBJgtQp4ZrOPuUhmwiQw6FmOvt7nywudOc",
-  authDomain: "alphaconvert-d6d65.firebaseapp.com",
-  projectId: "alphaconvert-d6d65",
-  storageBucket: "alphaconvert-d6d65.firebasestorage.app",
-  messagingSenderId: "599445275974",
-  appId: "1:599445275974:web:9c19afd3c4f8219e3f9147"
-};
-const fbApp = initializeApp(firebaseConfig);
-const db = getFirestore(fbApp);
 
-// ── FINGERPRINT ───────────────────────────────────────────────
-function getFingerprint() {
-  const raw = [
-    navigator.userAgent,
-    navigator.language,
-    screen.width + 'x' + screen.height,
-    screen.colorDepth,
-    new Date().getTimezoneOffset(),
-    navigator.hardwareConcurrency || '',
-    navigator.platform || ''
-  ].join('|');
-  // Simple hash
-  let hash = 0;
-  for (let i = 0; i < raw.length; i++) {
-    hash = ((hash << 5) - hash) + raw.charCodeAt(i);
-    hash |= 0;
-  }
-  return Math.abs(hash).toString(36);
-}
+def _clean(text: str) -> str:
+    """Supprime les caractères spéciaux pour éviter les erreurs Telegram."""
+    return "".join(c for c in text if c.isalnum() or c in " .,!?()+-")
 
-// ── IP ────────────────────────────────────────────────────────
-async function getIP() {
-  try {
-    const r = await fetch('https://api.ipify.org?format=json');
-    const d = await r.json();
-    return d.ip || 'unknown';
-  } catch { return 'unknown'; }
-}
 
-// ── CLIENT ID = fingerprint + ip ─────────────────────────────
-let clientId = null;
-async function getClientId() {
-  if (clientId) return clientId;
-  const fp = getFingerprint();
-  const ip = await getIP();
-  clientId = `${fp}_${ip.replace(/\./g, '-')}`;
-  return clientId;
-}
+async def start_download(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    user_id = query.from_user.id
+    ensure_user(user_id, query.from_user.username, query.from_user.first_name)
 
-// ── TODAY KEY ─────────────────────────────────────────────────
-function todayKey() {
-  return new Date().toISOString().split('T')[0]; // ex: "2026-03-17"
-}
+    context.user_data.clear()
 
-// ── PREMIUM CODE CHECK ────────────────────────────────────────
-let isPremium = false;
-let premiumExpiry = null;
+    usage   = get_usage(user_id)
+    premium = is_premium(user_id)
 
-async function checkPremiumCode(code) {
-  try {
-    const ref = doc(db, 'premiumCodes', code.toUpperCase().trim());
-    const snap = await getDoc(ref);
-    if (!snap.exists()) return { valid: false, msg: '❌ Code invalide.' };
-    const data = snap.data();
-    if (data.used) return { valid: false, msg: '❌ Ce code a déjà été utilisé.' };
-    const expiry = new Date(data.expiresAt);
-    if (expiry < new Date()) return { valid: false, msg: '❌ Ce code est expiré.' };
-    // Marquer comme utilisé + lier au clientId
-    const cid = await getClientId();
-    await updateDoc(ref, { used: true, usedBy: cid, usedAt: new Date().toISOString() });
-    // Sauvegarder localement
-    localStorage.setItem('premiumCode', code.toUpperCase().trim());
-    localStorage.setItem('premiumExpiry', data.expiresAt);
-    return { valid: true, expiry: data.expiresAt, label: data.label };
-  } catch (e) {
-    return { valid: false, msg: '❌ Erreur de vérification.' };
-  }
-}
+    if not premium and usage["downloads"] >= FREE_DOWNLOADS_PER_DAY:
+        await query.edit_message_text(
+            f"❌ Limite atteinte !\n\n"
+            f"Tu as utilisé tes {FREE_DOWNLOADS_PER_DAY} téléchargements gratuits aujourd'hui.\n"
+            "Le quota se renouvelle chaque jour à minuit.\n\n"
+            "💎 Passe en Premium pour un accès illimité !",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("💎 Voir les plans", callback_data="premium")],
+                [InlineKeyboardButton("⬅️ Retour",         callback_data="menu")],
+            ]),
+        )
+        return ConversationHandler.END
 
-async function checkSavedPremium() {
-  const code = localStorage.getItem('premiumCode');
-  const expiry = localStorage.getItem('premiumExpiry');
-  if (!code || !expiry) return false;
-  const exp = new Date(expiry);
-  if (exp < new Date()) {
-    localStorage.removeItem('premiumCode');
-    localStorage.removeItem('premiumExpiry');
-    return false;
-  }
-  // Vérifier que le code existe encore et n'a pas été révoqué
-  try {
-    const ref = doc(db, 'premiumCodes', code);
-    const snap = await getDoc(ref);
-    if (!snap.exists() || snap.data().revoked) {
-      localStorage.removeItem('premiumCode');
-      localStorage.removeItem('premiumExpiry');
-      return false;
-    }
-  } catch { return false; }
-  isPremium = true;
-  premiumExpiry = expiry;
-  return true;
-}
+    remaining = "illimité ♾️" if premium else f"{FREE_DOWNLOADS_PER_DAY - usage['downloads']} restant(s)"
+    max_size  = PREMIUM_MAX_FILE_SIZE_MB if premium else FREE_MAX_FILE_SIZE_MB
 
-// ── DOWNLOAD LIMIT ────────────────────────────────────────────
-async function canDownload() {
-  if (isPremium) return { allowed: true };
-  const cid = await getClientId();
-  const today = todayKey();
-  const ref = doc(db, 'limits', `${cid}_${today}`);
-  try {
-    const snap = await getDoc(ref);
-    if (!snap.exists()) return { allowed: true, count: 0 };
-    const count = snap.data().count || 0;
-    if (count >= DAILY_LIMIT) return { allowed: false, count };
-    return { allowed: true, count };
-  } catch { return { allowed: true, count: 0 }; }
-}
+    await query.edit_message_text(
+        "📥 Téléchargement de média\n\n"
+        "Envoie-moi le lien de la vidéo :\n\n"
+        "🔴 YouTube\n"
+        "📸 Instagram (posts, reels)\n"
+        "🎵 TikTok\n\n"
+        f"📊 Quota aujourd'hui : {remaining}\n"
+        f"📁 Taille max : {max_size}MB\n\n"
+        "Envoie /cancel pour annuler",
+    )
+    return WAITING_LINK
 
-async function recordDownload() {
-  if (isPremium) return;
-  const cid = await getClientId();
-  const today = todayKey();
-  const ref = doc(db, 'limits', `${cid}_${today}`);
-  try {
-    const snap = await getDoc(ref);
-    if (!snap.exists()) {
-      await setDoc(ref, { count: 1, clientId: cid, date: today });
-    } else {
-      await updateDoc(ref, { count: increment(1) });
-    }
-  } catch {}
-}
 
-async function getDownloadCount() {
-  if (isPremium) return 0;
-  const cid = await getClientId();
-  const today = todayKey();
-  const ref = doc(db, 'limits', `${cid}_${today}`);
-  try {
-    const snap = await getDoc(ref);
-    return snap.exists() ? (snap.data().count || 0) : 0;
-  } catch { return 0; }
-}
+async def handle_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    url      = update.message.text.strip()
+    platform = detect_platform(url)
 
-// ── UI PREMIUM BADGE ─────────────────────────────────────────
-function updatePremiumBadge() {
-  const badge = document.getElementById('premiumBadge');
-  const counter = document.getElementById('dlCounter');
-  if (!badge || !counter) return;
+    if not platform:
+        await update.message.reply_text(
+            "❌ Lien non reconnu.\n\n"
+            "J'accepte les liens :\n"
+            "• youtube.com / youtu.be\n"
+            "• instagram.com\n"
+            "• tiktok.com\n\n"
+            "Essaie encore ou /cancel"
+        )
+        return WAITING_LINK
 
-  if (isPremium) {
-    const exp = new Date(premiumExpiry).toLocaleDateString('fr', {day:'2-digit', month:'long', year:'numeric'});
-    badge.innerHTML = `⭐ Premium actif — expire le ${exp}`;
-    badge.style.color = '#f59e0b';
-    badge.style.display = 'block';
-    counter.style.display = 'none';
-  } else {
-    badge.style.display = 'none';
-    getDownloadCount().then(count => {
-      const left = DAILY_LIMIT - count;
-      counter.textContent = `${left} téléchargement${left > 1 ? 's' : ''} gratuit${left > 1 ? 's' : ''} restant aujourd'hui`;
-      counter.style.color = left <= 1 ? '#ef4444' : '#6b7280';
-      counter.style.display = 'block';
-    });
-  }
-}
+    context.user_data["url"]      = url
+    context.user_data["platform"] = platform
 
-// ── TABS ─────────────────────────────────────────────────────
-const tabPlaceholders = {
-  yt: 'Colle ton lien YouTube ici…',
-  ig: 'Colle ton lien Instagram ici…',
-  tt: 'Colle ton lien TikTok ici…'
-};
+    emoji_map = {"youtube": "🔴", "instagram": "📸", "tiktok": "🎵"}
+    msg = await update.message.reply_text(f"{emoji_map[platform]} Analyse du lien en cours...")
 
-function switchTab(btn, platform) {
-  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-  btn.classList.add('active');
-  document.getElementById('urlInput').placeholder = tabPlaceholders[platform];
-  hideResult();
-}
+    try:
+        loop = asyncio.get_event_loop()
+        info = await loop.run_in_executor(None, get_video_info, url)
+        context.user_data["video_info"] = info
 
-function selectFmt(el) {
-  document.querySelectorAll('.fmt-chip').forEach(c => c.classList.remove('selected'));
-  el.classList.add('selected');
-}
+        dur     = info["duration"]
+        dur_str = f"{int(dur)//60}:{int(dur)%60:02d}" if dur else "?"
+        title   = _clean(info["title"][:50])
 
-function hideResult() {
-  document.getElementById('resultRow').classList.remove('show');
-  document.getElementById('loader').classList.remove('show');
-}
+        await msg.edit_text(
+            f"✅ Vidéo trouvée !\n\n"
+            f"📌 {title}\n"
+            f"⏱ Durée : {dur_str}\n"
+            f"👤 {_clean(info['uploader'])}\n\n"
+            "Choisis le format :",
+            reply_markup=_format_keyboard(),
+        )
+    except Exception as e:
+        logger.warning(f"Impossible de lire les infos : {e}")
+        await msg.edit_text(
+            "⚠️ Infos non disponibles, je vais quand même essayer.\n\n"
+            "Choisis le format :",
+            reply_markup=_format_keyboard(),
+        )
 
-function fmtDur(sec) {
-  if (!sec) return '';
-  const m = Math.floor(sec / 60), s = sec % 60;
-  return `${m}:${s.toString().padStart(2, '0')}`;
-}
+    return WAITING_FORMAT
 
-function dlIcon() {
-  return `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
-    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-    <polyline points="7 10 12 15 17 10"/>
-    <line x1="12" y1="15" x2="12" y2="3"/>
-  </svg>`;
-}
 
-// ── ANALYZE ───────────────────────────────────────────────────
-async function analyze() {
-  const url = document.getElementById('urlInput').value.trim();
-  if (!url) { document.getElementById('urlInput').focus(); return; }
+async def handle_format(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
 
-  // Vérifier la limite
-  const { allowed, count } = await canDownload();
-  if (!allowed) {
-    showLimitModal();
-    return;
-  }
+    fmt = query.data.replace("fmt_", "")
+    context.user_data["format"] = fmt
 
-  hideResult();
-  const loader = document.getElementById('loader');
-  loader.classList.add('show');
-  document.getElementById('loaderText').textContent = 'Analyse du lien en cours…';
+    if fmt == "mp3":
+        context.user_data["quality"] = "720"
+        await query.edit_message_text("⏳ Téléchargement MP3 en cours...\nCa peut prendre quelques secondes.")
+        await _do_download(query.message, context, query.from_user.id)
+        return ConversationHandler.END
 
-  try {
-    const res = await fetch(`${BACKEND}/info?url=${encodeURIComponent(url)}`);
-    if (!res.ok) throw new Error('Erreur serveur');
-    const data = await res.json();
+    await query.edit_message_text(
+        "🎬 Choisis la qualité vidéo :",
+        reply_markup=_quality_keyboard(),
+    )
+    return WAITING_QUALITY
 
-    loader.classList.remove('show');
 
-    document.getElementById('rThumb').src = data.thumbnail || '';
-    document.getElementById('rTitle').textContent = data.title || 'Vidéo';
-    const dur = data.duration ? ` · ${fmtDur(data.duration)}` : '';
-    document.getElementById('rMeta').textContent = (data.platform || '') + dur;
+async def handle_quality(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
 
-    const formats = [
-      { label: 'MP4 1080p', fmt: 'mp4', q: '1080' },
-      { label: 'MP4 720p',  fmt: 'mp4', q: '720'  },
-      { label: 'MP4 480p',  fmt: 'mp4', q: '480'  },
-      { label: 'MP3 Audio', fmt: 'mp3', q: 'best'  },
-    ];
+    quality = query.data.replace("qual_", "")
+    context.user_data["quality"] = quality
 
-    document.getElementById('dlGrid').innerHTML = formats.map(f => `
-      <a class="dl-chip" href="#" onclick="handleDownload(event,'${encodeURIComponent(url)}','${f.fmt}','${f.q}')">
-        ${dlIcon()} ${f.label}
-      </a>
-    `).join('');
+    labels = {"1080": "1080p HD", "720": "720p", "480": "480p", "360": "360p"}
+    await query.edit_message_text(
+        f"⏳ Téléchargement en {labels.get(quality, quality)} en cours...\n"
+        "Ca peut prendre quelques secondes.",
+    )
+    await _do_download(query.message, context, query.from_user.id)
+    return ConversationHandler.END
 
-    document.getElementById('resultRow').classList.add('show');
 
-  } catch (e) {
-    loader.classList.remove('show');
-    alert('Impossible d\'analyser ce lien.\nVérifie qu\'il est public et réessaie.');
-  }
-}
+async def _do_download(message, context: ContextTypes.DEFAULT_TYPE, user_id: int):
+    url     = context.user_data.get("url", "")
+    fmt     = context.user_data.get("format", "mp4")
+    quality = context.user_data.get("quality", "720")
+    premium = is_premium(user_id)
+    max_mb  = PREMIUM_MAX_FILE_SIZE_MB if premium else FREE_MAX_FILE_SIZE_MB
 
-// ── DOWNLOAD HANDLER ─────────────────────────────────────────
-async function handleDownload(e, encodedUrl, fmt, q) {
-  e.preventDefault();
-  const { allowed } = await canDownload();
-  if (!allowed) { showLimitModal(); return; }
+    try:
+        await message.get_bot().send_chat_action(
+            chat_id=message.chat_id,
+            action="upload_video" if fmt != "mp3" else "upload_voice"
+        )
+    except Exception:
+        pass
 
-  await recordDownload();
-  updatePremiumBadge();
+    try:
+        loop = asyncio.get_event_loop()
+        file_path, title = await loop.run_in_executor(None, download_media, url, fmt, quality)
 
-  const url = decodeURIComponent(encodedUrl);
-  window.location.href = `${BACKEND}/download?url=${encodedUrl}&format=${fmt}&quality=${q}`;
-}
+        if not file_path or not os.path.exists(file_path):
+            await message.reply_text(
+                "❌ Téléchargement échoué.\n"
+                "La vidéo est peut-être privée ou le lien a expiré."
+            )
+            return
 
-// ── LIMIT MODAL ───────────────────────────────────────────────
-function showLimitModal() {
-  document.getElementById('limitModal').style.display = 'flex';
-}
-function closeLimitModal() {
-  document.getElementById('limitModal').style.display = 'none';
-}
+        size_mb = os.path.getsize(file_path) / (1024 * 1024)
 
-// ── PREMIUM CODE MODAL ────────────────────────────────────────
-function openCodeModal() {
-  closeLimitModal();
-  document.getElementById('codeModal').style.display = 'flex';
-  document.getElementById('codeInput').value = '';
-  document.getElementById('codeMsg').textContent = '';
-}
-function closeCodeModal() {
-  document.getElementById('codeModal').style.display = 'none';
-}
+        if size_mb > max_mb:
+            os.remove(file_path)
+            tip = "\n\n💎 Passe en Premium pour des fichiers jusqu'à 500MB !" if not premium else ""
+            await message.reply_text(
+                f"❌ Fichier trop lourd !\n\n"
+                f"Taille : {size_mb:.1f}MB\nLimite : {max_mb}MB{tip}"
+            )
+            return
 
-async function activateCode() {
-  const code = document.getElementById('codeInput').value.trim();
-  if (!code) return;
-  const btn = document.getElementById('activateBtn');
-  btn.disabled = true;
-  btn.textContent = 'Vérification…';
-  document.getElementById('codeMsg').textContent = '';
+        try:
+            await message.get_bot().send_chat_action(
+                chat_id=message.chat_id,
+                action="upload_video" if fmt != "mp3" else "upload_voice"
+            )
+        except Exception:
+            pass
 
-  const result = await checkPremiumCode(code);
-  if (result.valid) {
-    isPremium = true;
-    premiumExpiry = result.expiry;
-    const exp = new Date(result.expiry).toLocaleDateString('fr', {day:'2-digit', month:'long', year:'numeric'});
-    document.getElementById('codeMsg').style.color = '#10b981';
-    document.getElementById('codeMsg').textContent = `✅ Premium activé ! Expire le ${exp}`;
-    updatePremiumBadge();
-    setTimeout(() => closeCodeModal(), 2000);
-  } else {
-    document.getElementById('codeMsg').style.color = '#ef4444';
-    document.getElementById('codeMsg').textContent = result.msg;
-  }
-  btn.disabled = false;
-  btn.textContent = 'Activer';
-}
+        safe_title = _clean(title[:100])
 
-// ── INIT ──────────────────────────────────────────────────────
-document.addEventListener('DOMContentLoaded', async () => {
-  await checkSavedPremium();
-  updatePremiumBadge();
+        with open(file_path, "rb") as f:
+            if fmt == "mp3":
+                await message.reply_audio(
+                    f,
+                    title=safe_title[:64],
+                    filename=f"{safe_title[:50]}.mp3",
+                    caption="Via Alpha Convert",
+                )
+            else:
+                await message.reply_video(
+                    f,
+                    caption=f"Via Alpha Convert",
+                    supports_streaming=True,
+                )
 
-  document.getElementById('urlInput').addEventListener('keydown', e => {
-    if (e.key === 'Enter') analyze();
-  });
-});
+        increment_usage(user_id, "downloads")
+        os.remove(file_path)
 
-// Expose functions to global scope (used in HTML onclick)
-window.switchTab = switchTab;
-window.selectFmt = selectFmt;
-window.analyze = analyze;
-window.handleDownload = handleDownload;
-window.showLimitModal = showLimitModal;
-window.closeLimitModal = closeLimitModal;
-window.openCodeModal = openCodeModal;
-window.closeCodeModal = closeCodeModal;
-window.activateCode = activateCode;
+        from handlers.menu import main_keyboard
+        await message.reply_text(
+            "✅ Téléchargement terminé !",
+            reply_markup=main_keyboard()
+        )
+
+    except Exception as e:
+        logger.error(f"Erreur download : {e}")
+        try:
+            if 'file_path' in locals() and file_path and os.path.exists(file_path):
+                os.remove(file_path)
+        except Exception:
+            pass
+        from handlers.menu import main_keyboard
+        await message.reply_text(
+            "❌ Erreur lors du téléchargement.\n"
+            "Vérifie que la vidéo est publique et réessaie.",
+            reply_markup=main_keyboard()
+        )
+
+
+def _format_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("🎬 MP4 (vidéo)", callback_data="fmt_mp4"),
+            InlineKeyboardButton("🎵 MP3 (audio)", callback_data="fmt_mp3"),
+        ]
+    ])
+
+
+def _quality_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🔵 1080p HD",           callback_data="qual_1080")],
+        [InlineKeyboardButton("📺 720p",               callback_data="qual_720")],
+        [InlineKeyboardButton("📱 480p",               callback_data="qual_480")],
+        [InlineKeyboardButton("💨 360p (plus rapide)", callback_data="qual_360")],
+    ])
