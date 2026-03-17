@@ -45,8 +45,10 @@ def get_video_info(url: str) -> dict:
     platform = detect_platform(url)
     opts = {"quiet": True, "no_warnings": True, "skip_download": True}
 
-    if platform == "instagram" and _cookie_paths.get("instagram"):
-        opts["cookiefile"] = _cookie_paths["instagram"]
+    if platform == "instagram":
+        opts["impersonate"] = ImpersonateTarget("chrome")
+        if _cookie_paths.get("instagram"):
+            opts["cookiefile"] = _cookie_paths["instagram"]
     if platform == "tiktok":
         opts["impersonate"] = ImpersonateTarget("chrome")
         if _cookie_paths.get("tiktok"):
@@ -81,22 +83,23 @@ def download_media(url: str, format_type: str = "mp4", quality: str = "720") -> 
         "outtmpl":     tpl,
         "quiet":       False,
         "no_warnings": False,
-        # Fallback automatique si le format exact n'existe pas
         "ignoreerrors": False,
     }
 
     if PROXY_URL:
         base_opts["proxy"] = PROXY_URL
-    if platform == "instagram" and _cookie_paths.get("instagram"):
-        base_opts["cookiefile"] = _cookie_paths["instagram"]
-        logger.info("Instagram : cookies activés")
+    if platform == "instagram":
+        base_opts["impersonate"] = ImpersonateTarget("chrome")
+        if _cookie_paths.get("instagram"):
+            base_opts["cookiefile"] = _cookie_paths["instagram"]
+        logger.info("Instagram : impersonate chrome + cookies")
     if platform == "tiktok":
         base_opts["impersonate"] = ImpersonateTarget("chrome")
         if _cookie_paths.get("tiktok"):
             base_opts["cookiefile"] = _cookie_paths["tiktok"]
         logger.info("TikTok : impersonate chrome")
     if platform == "youtube":
-        logger.info("YouTube : mode web + bgutil POT provider")
+        logger.info("YouTube : mode simple")
 
     # ── MP3 ───────────────────────────────────────────────────────────────────
     if format_type == "mp3":
@@ -114,8 +117,6 @@ def download_media(url: str, format_type: str = "mp4", quality: str = "720") -> 
         if platform == "instagram":
             fmt = "best[ext=mp4]/best"
         else:
-            # Format avec fallbacks robustes pour chaque qualité
-            # On essaie d'abord mp4 pur, puis merge, puis best disponible sous cette résolution
             qmap = {
                 "1080": (
                     "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]"
@@ -133,14 +134,12 @@ def download_media(url: str, format_type: str = "mp4", quality: str = "720") -> 
                     "bestvideo[height<=480][ext=mp4]+bestaudio[ext=m4a]"
                     "/bestvideo[height<=480]+bestaudio"
                     "/best[height<=480]"
-                    "/best[height<=720]"
                     "/best"
                 ),
                 "360": (
                     "bestvideo[height<=360][ext=mp4]+bestaudio[ext=m4a]"
                     "/bestvideo[height<=360]+bestaudio"
                     "/best[height<=360]"
-                    "/best[height<=480]"
                     "/best"
                 ),
             }
