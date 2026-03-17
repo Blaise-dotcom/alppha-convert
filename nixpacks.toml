@@ -1,9 +1,9 @@
 [phases.setup]
-nixPkgs = ["python311", "ffmpeg", "nodejs_20", "git", "deno"]
+nixPkgs = ["python311", "ffmpeg", "nodejs_20", "git"]
 
 [phases.build]
 cmds = [
-  "git clone --single-branch --branch 1.3.1 https://github.com/Brainicism/bgutil-ytdlp-pot-provider.git /app/bgutil-server",
+  "git clone https://github.com/Brainicism/bgutil-ytdlp-pot-provider.git /app/bgutil-server",
   "cd /app/bgutil-server/server && npm ci && npx tsc"
 ]
 
