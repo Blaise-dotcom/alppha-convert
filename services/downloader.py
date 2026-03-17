@@ -1,12 +1,24 @@
 """
 services/downloader.py
 """
-import yt_dlp, os, base64, logging, re
+import yt_dlp, os, base64, logging, re, random
 from yt_dlp.networking.impersonate import ImpersonateTarget
 from config import DOWNLOAD_PATH, PROXY_URL, COOKIES_YOUTUBE, COOKIES_INSTAGRAM, COOKIES_TIKTOK
 
 logger = logging.getLogger(__name__)
 os.makedirs(DOWNLOAD_PATH, exist_ok=True)
+
+# ── Proxies résidentiels (rotation) ──────────────────────────────────────────
+# Mettre plusieurs proxies séparés par virgule dans PROXY_URLS
+# Format: http://user:pass@host:port,http://user:pass@host2:port2
+_raw_proxies = os.environ.get("PROXY_URLS", PROXY_URL or "")
+PROXY_LIST = [p.strip() for p in _raw_proxies.split(",") if p.strip()]
+logger.info(f"Proxies configurés: {len(PROXY_LIST)}")
+
+def _get_proxy() -> str | None:
+    """Retourne un proxy aléatoire depuis la liste, ou None."""
+    return random.choice(PROXY_LIST) if PROXY_LIST else None
+
 
 def _write_cookie(b64_content: str, filename: str) -> str | None:
     if not b64_content:
@@ -41,20 +53,36 @@ def detect_platform(url: str) -> str | None:
     return None
 
 
+def _build_instagram_opts(base: dict) -> dict:
+    """Applique impersonate + proxy + cookies pour Instagram."""
+    opts = {**base}
+    opts["impersonate"] = ImpersonateTarget("chrome", "131")
+    proxy = _get_proxy()
+    if proxy:
+        opts["proxy"] = proxy
+        logger.info(f"Instagram : proxy activé → {proxy.split('@')[-1]}")
+    else:
+        logger.warning("Instagram : aucun proxy configuré — risque de blocage Railway")
+    if _cookie_paths.get("instagram"):
+        opts["cookiefile"] = _cookie_paths["instagram"]
+    return opts
+
+
 def get_video_info(url: str) -> dict:
     platform = detect_platform(url)
     opts = {"quiet": True, "no_warnings": True, "skip_download": True}
 
     if platform == "instagram":
+        opts = _build_instagram_opts(opts)
+    elif platform == "tiktok":
         opts["impersonate"] = ImpersonateTarget("chrome")
-        if _cookie_paths.get("instagram"):
-            opts["cookiefile"] = _cookie_paths["instagram"]
-    if platform == "tiktok":
-        opts["impersonate"] = ImpersonateTarget("chrome")
+        proxy = _get_proxy()
+        if proxy:
+            opts["proxy"] = proxy
         if _cookie_paths.get("tiktok"):
             opts["cookiefile"] = _cookie_paths["tiktok"]
-    if PROXY_URL:
-        opts["proxy"] = PROXY_URL
+    elif PROXY_LIST:
+        opts["proxy"] = _get_proxy()
 
     try:
         with yt_dlp.YoutubeDL(opts) as ydl:
@@ -80,25 +108,25 @@ def download_media(url: str, format_type: str = "mp4", quality: str = "720") -> 
     logger.info(f"Début téléchargement | platform={platform} | format={format_type} | quality={quality}")
 
     base_opts = {
-        "outtmpl":     tpl,
-        "quiet":       False,
-        "no_warnings": False,
+        "outtmpl":      tpl,
+        "quiet":        False,
+        "no_warnings":  False,
         "ignoreerrors": False,
     }
 
-    if PROXY_URL:
-        base_opts["proxy"] = PROXY_URL
     if platform == "instagram":
+        base_opts = _build_instagram_opts(base_opts)
+    elif platform == "tiktok":
         base_opts["impersonate"] = ImpersonateTarget("chrome")
-        if _cookie_paths.get("instagram"):
-            base_opts["cookiefile"] = _cookie_paths["instagram"]
-        logger.info("Instagram : impersonate chrome + cookies")
-    if platform == "tiktok":
-        base_opts["impersonate"] = ImpersonateTarget("chrome")
+        proxy = _get_proxy()
+        if proxy:
+            base_opts["proxy"] = proxy
         if _cookie_paths.get("tiktok"):
             base_opts["cookiefile"] = _cookie_paths["tiktok"]
         logger.info("TikTok : impersonate chrome")
-    if platform == "youtube":
+    elif platform == "youtube":
+        if PROXY_LIST:
+            base_opts["proxy"] = _get_proxy()
         logger.info("YouTube : mode simple")
 
     # ── MP3 ───────────────────────────────────────────────────────────────────
@@ -118,30 +146,10 @@ def download_media(url: str, format_type: str = "mp4", quality: str = "720") -> 
             fmt = "best[ext=mp4]/best"
         else:
             qmap = {
-                "1080": (
-                    "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]"
-                    "/bestvideo[height<=1080]+bestaudio"
-                    "/best[height<=1080]"
-                    "/best"
-                ),
-                "720": (
-                    "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]"
-                    "/bestvideo[height<=720]+bestaudio"
-                    "/best[height<=720]"
-                    "/best"
-                ),
-                "480": (
-                    "bestvideo[height<=480][ext=mp4]+bestaudio[ext=m4a]"
-                    "/bestvideo[height<=480]+bestaudio"
-                    "/best[height<=480]"
-                    "/best"
-                ),
-                "360": (
-                    "bestvideo[height<=360][ext=mp4]+bestaudio[ext=m4a]"
-                    "/bestvideo[height<=360]+bestaudio"
-                    "/best[height<=360]"
-                    "/best"
-                ),
+                "1080": "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=1080]+bestaudio/best[height<=1080]/best",
+                "720":  "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=720]+bestaudio/best[height<=720]/best",
+                "480":  "bestvideo[height<=480][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=480]+bestaudio/best[height<=480]/best",
+                "360":  "bestvideo[height<=360][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=360]+bestaudio/best[height<=360]/best",
             }
             fmt = qmap.get(quality, qmap["720"])
 
