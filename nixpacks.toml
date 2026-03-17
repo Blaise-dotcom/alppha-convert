@@ -1,5 +1,5 @@
 [phases.setup]
-nixPkgs = ["python311", "ffmpeg", "nodejs_20", "git"]
+nixPkgs = ["python311", "ffmpeg", "nodejs_20", "git", "deno"]
 
 [phases.build]
 cmds = [
