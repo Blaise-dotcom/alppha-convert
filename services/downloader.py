@@ -86,45 +86,19 @@ def _save_stream(dl_url: str, title: str, ext: str) -> str:
     logger.info(f"Saved: {path}")
     return path
 
-# ── bgutil POToken fetch ──────────────────────────────────────────────────────
-_pot_cache: dict = {"token": None, "visitor_data": None}
-
-def _fetch_pot(video_id: str = "dQw4w9WgXcQ") -> tuple[str | None, str | None]:
-    """Fetch a fresh POToken from the local bgutil server (port 4416)."""
-    try:
-        r = httpx.post(
-            "http://localhost:4416/token",
-            json={"videoId": video_id},
-            timeout=15,
-        )
-        if r.status_code == 200:
-            d = r.json()
-            token = d.get("poToken") or d.get("pot") or d.get("token")
-            visitor = d.get("visitorData") or d.get("visitor_data")
-            if token:
-                logger.info(f"POToken fetched from bgutil OK")
-                _pot_cache["token"] = token
-                _pot_cache["visitor_data"] = visitor
-                return token, visitor
-    except Exception as e:
-        logger.warning(f"bgutil POToken fetch failed: {e}")
-    return _pot_cache.get("token"), _pot_cache.get("visitor_data")
-
-
-# ── yt-dlp opts YouTube avec bgutil POToken ───────────────────────────────────
-def _yt_opts(extra: dict = None, video_id: str = "dQw4w9WgXcQ") -> dict:
-    pot, visitor_data = _fetch_pot(video_id)
-
-    yt_args: dict = {"player_client": ["web"]}
-    if pot:
-        yt_args["po_token"] = [f"web+{pot}"]
-    if visitor_data:
-        yt_args["visitor_data"] = [visitor_data]
-
+# ── yt-dlp opts YouTube (android client — pas besoin de cookies ni POToken) ──
+def _yt_opts(extra: dict = None, video_id: str = "") -> dict:
     opts = {
         "quiet": True,
         "no_warnings": True,
-        "extractor_args": {"youtube": yt_args},
+        "extractor_args": {
+            "youtube": {
+                "player_client": ["android", "web"],
+            }
+        },
+        "http_headers": {
+            "User-Agent": "com.google.android.youtube/19.09.37 (Linux; U; Android 11) gzip",
+        },
     }
     if _cookie_paths.get("youtube"):
         opts["cookiefile"] = _cookie_paths["youtube"]
@@ -282,8 +256,7 @@ def get_video_info(url: str) -> dict:
     platform = detect_platform(url)
 
     if platform == "youtube":
-        vid_id = _extract_yt_id(url)
-        opts = _yt_opts({"skip_download": True}, video_id=vid_id)
+        opts = _yt_opts({"skip_download": True})
     elif platform == "tiktok":
         opts = _tt_opts({"skip_download": True})
     else:
@@ -330,8 +303,7 @@ def download_media(url: str, format_type: str = "mp4", quality: str = "720") -> 
     extra = {"outtmpl": tpl, "quiet": False, "no_warnings": False, **fmt_opts}
 
     if platform == "youtube":
-        vid_id = _extract_yt_id(url)
-        opts = _yt_opts(extra, video_id=vid_id)
+        opts = _yt_opts(extra)
     elif platform == "tiktok":
         opts = _tt_opts(extra)
     else:
