@@ -54,6 +54,7 @@ async def start_download(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "📥 Téléchargement de média\n\n"
         "Envoie-moi le lien de la vidéo :\n\n"
         "🔴 YouTube\n"
+        "📸 Instagram (posts, reels)\n"
         "🎵 TikTok\n\n"
         f"📊 Quota aujourd'hui : {remaining}\n"
         f"📁 Taille max : {max_size}MB\n\n"
@@ -71,18 +72,9 @@ async def handle_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "❌ Lien non reconnu.\n\n"
             "J'accepte les liens :\n"
             "• youtube.com / youtu.be\n"
+            "• instagram.com\n"
             "• tiktok.com\n\n"
             "Essaie encore ou /cancel"
-        )
-        return WAITING_LINK
-
-    if platform == "instagram":
-        await update.message.reply_text(
-            "📸 Instagram n'est pas disponible pour le moment.\n\n"
-            "En attendant, tu peux télécharger depuis :\n"
-            "🔴 YouTube\n"
-            "🎵 TikTok\n\n"
-            "Envoie un lien YouTube ou TikTok, ou /cancel pour annuler."
         )
         return WAITING_LINK
 
@@ -91,6 +83,17 @@ async def handle_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     emoji_map = {"youtube": "🔴", "instagram": "📸", "tiktok": "🎵"}
     msg = await update.message.reply_text(f"{emoji_map[platform]} Analyse du lien en cours...")
+
+    if platform == "instagram":
+        await msg.edit_text(
+            "📸 Instagram\n\n"
+            "Nous travaillons sur cette option.\n\n"
+            "✅ YouTube et TikTok fonctionnent normalement.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("⬅️ Retour au menu", callback_data="menu")],
+            ]),
+        )
+        return ConversationHandler.END
 
     try:
         loop = asyncio.get_event_loop()
