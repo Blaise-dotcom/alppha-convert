@@ -240,10 +240,22 @@ def _rapi_download(url: str, platform: str, format_type: str) -> tuple[str | Non
 
 
 # ── Public API ────────────────────────────────────────────────────────────────
+WEB_API = "https://alphaconvert-web-production.up.railway.app"
+
 def get_video_info(url: str) -> dict:
     url = clean_url(url)
     platform = detect_platform(url)
 
+    # Utiliser l'API web qui fonctionne déjà
+    try:
+        r = httpx.get(f"{WEB_API}/info", params={"url": url}, timeout=20)
+        if r.status_code == 200:
+            logger.info(f"Web API info OK [{platform}]")
+            return r.json()
+    except Exception as e:
+        logger.warning(f"Web API info failed: {e}")
+
+    # Fallback local yt-dlp
     if platform == "youtube":
         opts = _yt_opts({"skip_download": True})
     elif platform == "tiktok":
@@ -258,12 +270,7 @@ def get_video_info(url: str) -> dict:
                 "thumbnail": info.get("thumbnail"), "uploader": info.get("uploader", ""),
                 "platform": platform}
     except Exception as e:
-        logger.warning(f"yt-dlp info [{platform}] failed: {e} → RapidAPI")
-
-    result = _rapi_info(url, platform)
-    if result:
-        logger.info(f"RapidAPI info OK [{platform}]")
-        return result
+        logger.warning(f"yt-dlp info [{platform}] failed: {e}")
 
     raise RuntimeError(f"Impossible de récupérer les infos pour {url}")
 
@@ -271,9 +278,37 @@ def get_video_info(url: str) -> dict:
 def download_media(url: str, format_type: str = "mp4", quality: str = "720") -> tuple[str | None, str]:
     url = clean_url(url)
     platform = detect_platform(url)
-    tpl = os.path.join(DOWNLOAD_PATH, "%(id)s_%(title).60s.%(ext)s")
     logger.info(f"Download | platform={platform} | format={format_type} | quality={quality}")
 
+    # ── Méthode 1 : API web (fonctionne même si Railway bloque YouTube) ────────
+    try:
+        logger.info("Tentative via Web API...")
+        r = httpx.get(
+            f"{WEB_API}/download",
+            params={"url": url, "format": format_type, "quality": quality},
+            timeout=120,
+            follow_redirects=True,
+        )
+        if r.status_code == 200 and len(r.content) > 10000:
+            ext = ".mp3" if format_type == "mp3" else ".mp4"
+            # Récupérer le titre depuis les headers si dispo
+            title = "media"
+            cd = r.headers.get("content-disposition", "")
+            if "filename=" in cd:
+                title = cd.split("filename=")[-1].strip('"').rsplit(".", 1)[0]
+            safe = re.sub(r"[^\w\-]", "_", title)[:60]
+            path = os.path.join(DOWNLOAD_PATH, f"{safe}{ext}")
+            with open(path, "wb") as f:
+                f.write(r.content)
+            logger.info(f"Web API OK: {path}")
+            return path, title
+        else:
+            logger.warning(f"Web API réponse invalide: status={r.status_code} size={len(r.content)}")
+    except Exception as e:
+        logger.warning(f"Web API download failed: {e}")
+
+    # ── Méthode 2 : yt-dlp local (fallback) ────────────────────────────────────
+    tpl = os.path.join(DOWNLOAD_PATH, "%(id)s_%(title).60s.%(ext)s")
     if format_type == "mp3":
         fmt_opts = {
             "format": "bestaudio/best",
@@ -290,7 +325,6 @@ def download_media(url: str, format_type: str = "mp4", quality: str = "720") -> 
         fmt_opts = {"format": fmt}
 
     extra = {"outtmpl": tpl, "quiet": False, "no_warnings": False, **fmt_opts}
-
     if platform == "youtube":
         opts = _yt_opts(extra)
     elif platform == "tiktok":
@@ -298,7 +332,6 @@ def download_media(url: str, format_type: str = "mp4", quality: str = "720") -> 
     else:
         opts = _ig_opts(extra)
 
-    # Tentative yt-dlp
     try:
         with yt_dlp.YoutubeDL(opts) as ydl:
             info = ydl.extract_info(url, download=True)
@@ -307,24 +340,14 @@ def download_media(url: str, format_type: str = "mp4", quality: str = "720") -> 
             base = re.sub(r'\.\w+$', '', path)
             for ext in [".mp4", ".mp3", ".mkv", ".webm", ".m4a"]:
                 if os.path.exists(base + ext):
-                    logger.info(f"yt-dlp OK: {base + ext}")
                     return base + ext, title
             vid = info.get("id", "")
             if vid:
                 for f in os.listdir(DOWNLOAD_PATH):
                     if f.startswith(vid) and not f.endswith(('.part', '.ytdl')):
-                        full = os.path.join(DOWNLOAD_PATH, f)
-                        logger.info(f"yt-dlp OK (ID): {full}")
-                        return full, title
+                        return os.path.join(DOWNLOAD_PATH, f), title
     except Exception as e:
-        logger.warning(f"yt-dlp [{platform}] failed: {e} → RapidAPI")
-
-    # Fallback RapidAPI
-    logger.info(f"RapidAPI fallback [{platform}]")
-    path, title = _rapi_download(url, platform, format_type)
-    if path and os.path.exists(path):
-        logger.info(f"RapidAPI OK: {path}")
-        return path, title
+        logger.warning(f"yt-dlp [{platform}] failed: {e}")
 
     logger.error(f"Echec total [{platform}] {url}")
     return None, "media"
