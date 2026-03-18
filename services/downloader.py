@@ -1,7 +1,6 @@
 """
 services/downloader.py
-— yt-dlp prioritaire + RapidAPI fallback (YouTube, TikTok)
-— bgutil supprimé (incompatible Node 20), remplacé par extractor_args robustes
+— yt-dlp (multi-client) + RapidAPI fallback
 """
 import yt_dlp, os, base64, logging, re, random, httpx, urllib.parse
 from config import DOWNLOAD_PATH, PROXY_URL, COOKIES_YOUTUBE, COOKIES_TIKTOK, RAPIDAPI_KEYS
@@ -47,22 +46,16 @@ _cookie_paths = {
 
 # ── URL Cleaning ──────────────────────────────────────────────────────────────
 def clean_url(url: str) -> str:
-    """Nettoie les paramètres tracking inutiles qui perturbent yt-dlp."""
     try:
         url = url.strip()
         parsed = urllib.parse.urlparse(url)
         params = urllib.parse.parse_qs(parsed.query)
-
         if "youtube.com" in parsed.netloc or "youtu.be" in parsed.netloc:
-            # Garde uniquement le paramètre "v" (id de la vidéo)
             clean_params = {k: v for k, v in params.items() if k == "v"}
             new_query = urllib.parse.urlencode(clean_params, doseq=True)
             return parsed._replace(query=new_query).geturl()
-
         if "tiktok.com" in parsed.netloc or "vm.tiktok" in parsed.netloc:
-            # Supprime tous les paramètres tracking TikTok
             return parsed._replace(query="", fragment="").geturl()
-
     except Exception:
         pass
     return url.strip()
@@ -80,6 +73,30 @@ def _extract_yt_id(url: str) -> str:
     m = re.search(r"(?:v=|youtu\.be/)([A-Za-z0-9_-]{11})", url)
     return m.group(1) if m else url
 
+# ── Télécharger une URL directe via yt-dlp ───────────────────────────────────
+# IMPORTANT : On utilise yt-dlp et non httpx pour télécharger les URLs
+# googlevideo retournées par yt-api. Google bloque httpx (403) mais pas yt-dlp
+# car yt-dlp envoie les bons User-Agent et headers YouTube.
+def _ytdlp_download_direct(direct_url: str, title: str, ext: str) -> str | None:
+    safe = re.sub(r'[^\w\-]', '_', title)[:60]
+    out_path = os.path.join(DOWNLOAD_PATH, f"{safe}{ext}")
+    try:
+        opts = {
+            "outtmpl": out_path,
+            "quiet": True,
+            "no_warnings": True,
+            "noprogress": True,
+        }
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            ydl.download([direct_url])
+        if os.path.exists(out_path):
+            logger.info(f"Direct dl OK: {out_path}")
+            return out_path
+    except Exception as e:
+        logger.warning(f"yt-dlp direct dl failed: {e}")
+    return None
+
+# ── httpx stream (TikTok / MP3 — pas bloqué par Google) ──────────────────────
 def _save_stream(dl_url: str, title: str, ext: str) -> str:
     safe = re.sub(r'[^\w\-]', '_', title)[:60]
     path = os.path.join(DOWNLOAD_PATH, f"{safe}{ext}")
@@ -89,49 +106,10 @@ def _save_stream(dl_url: str, title: str, ext: str) -> str:
         with open(path, "wb") as f:
             for chunk in r.iter_bytes(8192):
                 f.write(chunk)
-    logger.info(f"Saved: {path}")
+    logger.info(f"Stream saved: {path}")
     return path
 
-# ── yt-dlp options YouTube (sans bgutil) ─────────────────────────────────────
-def _get_yt_base_opts(extra: dict = None) -> dict:
-    """
-    Options yt-dlp pour YouTube.
-    - skip=webpage évite le bot-check dans certains cas
-    - player_client=android,web contourne le throttling
-    - cookies si disponibles
-    """
-    opts = {
-        "quiet": True,
-        "no_warnings": True,
-        "extractor_args": {
-            "youtube": {
-                "player_client": ["android", "web"],
-                "skip": ["webpage"],
-            }
-        },
-    }
-    if _cookie_paths.get("youtube"):
-        opts["cookiefile"] = _cookie_paths["youtube"]
-    if extra:
-        opts.update(extra)
-    return opts
-
-def _get_tt_base_opts(extra: dict = None) -> dict:
-    """Options yt-dlp pour TikTok."""
-    opts = {
-        "quiet": True,
-        "no_warnings": True,
-    }
-    proxy = _get_proxy()
-    if proxy:
-        opts["proxy"] = proxy
-    if _cookie_paths.get("tiktok"):
-        opts["cookiefile"] = _cookie_paths["tiktok"]
-    if extra:
-        opts.update(extra)
-    return opts
-
-# ── RapidAPI ─────────────────────────────────────────────────────────────────
+# ── RapidAPI info ─────────────────────────────────────────────────────────────
 def _rapi_info(url: str, platform: str) -> dict | None:
     key = _get_rapidapi_key()
     if not key:
@@ -144,6 +122,7 @@ def _rapi_info(url: str, platform: str) -> dict | None:
                 headers={"X-RapidAPI-Key": key, "X-RapidAPI-Host": "youtube-mp36.p.rapidapi.com"},
                 timeout=15,
             )
+            logger.info(f"RapidAPI info yt-mp36: {r.status_code}")
             if r.status_code == 200:
                 d = r.json()
                 return {
@@ -160,6 +139,7 @@ def _rapi_info(url: str, platform: str) -> dict | None:
                 headers={"X-RapidAPI-Key": key, "X-RapidAPI-Host": "tiktok-scraper7.p.rapidapi.com"},
                 timeout=15,
             )
+            logger.info(f"RapidAPI info tiktok: {r.status_code}")
             if r.status_code == 200:
                 d = r.json().get("data", {})
                 return {
@@ -173,36 +153,7 @@ def _rapi_info(url: str, platform: str) -> dict | None:
         logger.warning(f"RapidAPI info [{platform}]: {e}")
     return None
 
-
-def _rapi_download_youtube_mp4(url: str) -> tuple[str | None, str]:
-    """Télécharge YouTube MP4 via yt-api RapidAPI."""
-    key = _get_rapidapi_key()
-    if not key:
-        return None, "media"
-    try:
-        r = httpx.get(
-            "https://yt-api.p.rapidapi.com/dl",
-            params={"id": _extract_yt_id(url), "cgeo": "US"},
-            headers={"X-RapidAPI-Key": key, "X-RapidAPI-Host": "yt-api.p.rapidapi.com"},
-            timeout=30,
-        )
-        logger.info(f"yt-api status: {r.status_code}")
-        if r.status_code == 200:
-            d = r.json()
-            title = d.get("title", "video")
-            formats = d.get("formats", []) + d.get("adaptiveFormats", [])
-            mp4s = [
-                f for f in formats
-                if f.get("mimeType", "").startswith("video/mp4") and f.get("url")
-            ]
-            if mp4s:
-                best = sorted(mp4s, key=lambda x: x.get("height", 0), reverse=True)[0]
-                return _save_stream(best["url"], title, ".mp4"), title
-    except Exception as e:
-        logger.error(f"yt-api download: {e}")
-    return None, "media"
-
-
+# ── RapidAPI download ─────────────────────────────────────────────────────────
 def _rapi_download(url: str, platform: str, format_type: str) -> tuple[str | None, str]:
     key = _get_rapidapi_key()
     if not key:
@@ -215,13 +166,34 @@ def _rapi_download(url: str, platform: str, format_type: str) -> tuple[str | Non
                 headers={"X-RapidAPI-Key": key, "X-RapidAPI-Host": "youtube-mp36.p.rapidapi.com"},
                 timeout=30,
             )
+            logger.info(f"RapidAPI yt-mp3: {r.status_code}")
             if r.status_code == 200:
                 d = r.json()
                 if d.get("link"):
+                    # MP3 depuis youtube-mp36 → httpx suffit (pas bloqué par Google)
                     return _save_stream(d["link"], d.get("title", "audio"), ".mp3"), d.get("title", "audio")
 
         elif platform == "youtube":
-            return _rapi_download_youtube_mp4(url)
+            # yt-api retourne URL googlevideo → utiliser yt-dlp pour dl (httpx = 403)
+            r = httpx.get(
+                "https://yt-api.p.rapidapi.com/dl",
+                params={"id": _extract_yt_id(url), "cgeo": "US"},
+                headers={"X-RapidAPI-Key": key, "X-RapidAPI-Host": "yt-api.p.rapidapi.com"},
+                timeout=30,
+            )
+            logger.info(f"yt-api: {r.status_code}")
+            if r.status_code == 200:
+                d = r.json()
+                title = d.get("title", "video")
+                formats = d.get("formats", []) + d.get("adaptiveFormats", [])
+                mp4s = [f for f in formats if f.get("mimeType", "").startswith("video/mp4") and f.get("url")]
+                if mp4s:
+                    best = sorted(mp4s, key=lambda x: x.get("height", 0), reverse=True)[0]
+                    direct_url = best["url"]
+                    logger.info("yt-api URL obtenue, téléchargement via yt-dlp...")
+                    path = _ytdlp_download_direct(direct_url, title, ".mp4")
+                    if path:
+                        return path, title
 
         elif platform == "tiktok":
             r = httpx.get(
@@ -230,6 +202,7 @@ def _rapi_download(url: str, platform: str, format_type: str) -> tuple[str | Non
                 headers={"X-RapidAPI-Key": key, "X-RapidAPI-Host": "tiktok-scraper7.p.rapidapi.com"},
                 timeout=30,
             )
+            logger.info(f"RapidAPI tiktok: {r.status_code}")
             if r.status_code == 200:
                 d = r.json().get("data", {})
                 title = d.get("title", "tiktok")
@@ -250,12 +223,16 @@ def get_video_info(url: str) -> dict:
     url = clean_url(url)
     platform = detect_platform(url)
 
-    if platform == "youtube":
-        opts = _get_yt_base_opts({"skip_download": True})
-    elif platform == "tiktok":
-        opts = _get_tt_base_opts({"skip_download": True})
-    else:
-        opts = {"quiet": True, "no_warnings": True, "skip_download": True}
+    opts = {
+        "quiet": True,
+        "no_warnings": True,
+        "skip_download": True,
+        "extractor_args": {"youtube": {"player_client": ["android", "web"]}},
+    }
+    if _cookie_paths.get("youtube") and platform == "youtube":
+        opts["cookiefile"] = _cookie_paths["youtube"]
+    if _cookie_paths.get("tiktok") and platform == "tiktok":
+        opts["cookiefile"] = _cookie_paths["tiktok"]
 
     try:
         with yt_dlp.YoutubeDL(opts) as ydl:
@@ -283,9 +260,25 @@ def download_media(url: str, format_type: str = "mp4", quality: str = "720") -> 
     tpl = os.path.join(DOWNLOAD_PATH, "%(id)s_%(title).60s.%(ext)s")
     logger.info(f"Download | platform={platform} | format={format_type} | quality={quality}")
 
-    # ── Format options ────────────────────────────────────────────────────────
+    base_opts = {
+        "outtmpl": tpl,
+        "quiet": False,
+        "no_warnings": False,
+        "extractor_args": {"youtube": {"player_client": ["android", "web"]}},
+    }
+
+    if _cookie_paths.get("youtube") and platform == "youtube":
+        base_opts["cookiefile"] = _cookie_paths["youtube"]
+    if platform == "tiktok":
+        proxy = _get_proxy()
+        if proxy:
+            base_opts["proxy"] = proxy
+        if _cookie_paths.get("tiktok"):
+            base_opts["cookiefile"] = _cookie_paths["tiktok"]
+
     if format_type == "mp3":
-        fmt_opts = {
+        opts = {
+            **base_opts,
             "format": "bestaudio/best",
             "postprocessors": [{
                 "key": "FFmpegExtractAudio",
@@ -300,22 +293,13 @@ def download_media(url: str, format_type: str = "mp4", quality: str = "720") -> 
             "480":  "bestvideo[height<=480][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=480]+bestaudio/best[height<=480]/best",
             "360":  "bestvideo[height<=360][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=360]+bestaudio/best[height<=360]/best",
         }
-        fmt_opts = {
+        opts = {
+            **base_opts,
             "format": qmap.get(quality, qmap["720"]),
             "merge_output_format": "mp4",
         }
 
-    # ── Build opts ────────────────────────────────────────────────────────────
-    extra = {"outtmpl": tpl, "quiet": False, "no_warnings": False, **fmt_opts}
-
-    if platform == "youtube":
-        opts = _get_yt_base_opts(extra)
-    elif platform == "tiktok":
-        opts = _get_tt_base_opts(extra)
-    else:
-        opts = extra
-
-    # ── Try yt-dlp ────────────────────────────────────────────────────────────
+    # ── Essai 1 : yt-dlp direct ───────────────────────────────────────────────
     try:
         with yt_dlp.YoutubeDL(opts) as ydl:
             info = ydl.extract_info(url, download=True)
@@ -328,19 +312,18 @@ def download_media(url: str, format_type: str = "mp4", quality: str = "720") -> 
                     logger.info(f"yt-dlp OK: {base + ext}")
                     return base + ext, title
 
-            # Cherche par video ID si le chemin exact ne correspond pas
             vid = info.get("id", "")
             if vid:
                 for f in os.listdir(DOWNLOAD_PATH):
                     if f.startswith(vid) and not f.endswith(('.part', '.ytdl')):
                         full = os.path.join(DOWNLOAD_PATH, f)
-                        logger.info(f"yt-dlp OK (ID match): {full}")
+                        logger.info(f"yt-dlp OK (ID): {full}")
                         return full, title
 
     except Exception as e:
-        logger.warning(f"yt-dlp download [{platform}] failed: {e} → RapidAPI")
+        logger.warning(f"yt-dlp [{platform}] failed: {e} → RapidAPI")
 
-    # ── Fallback RapidAPI ─────────────────────────────────────────────────────
+    # ── Essai 2 : RapidAPI + yt-dlp pour dl l'URL directe ────────────────────
     logger.info(f"RapidAPI fallback [{platform}]")
     path, title = _rapi_download(url, platform, format_type)
     if path and os.path.exists(path):
