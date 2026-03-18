@@ -125,6 +125,19 @@ async def buy_stars(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ─── Pre-checkout Stars ───────────────────────────────────────────────────────
 
 async def pre_checkout(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    payload = update.pre_checkout_query.invoice_payload
+    parts = payload.split("_")
+    plan_key = parts[1] if len(parts) > 1 else None
+
+    if not plan_key or plan_key not in PLANS:
+        await update.pre_checkout_query.answer(ok=False, error_message="Plan invalide.")
+        return
+
+    plan = PLANS[plan_key]
+    if plan["stars"] != update.pre_checkout_query.total_amount:
+        await update.pre_checkout_query.answer(ok=False, error_message="Montant incorrect pour le plan sélectionné.")
+        return
+
     await update.pre_checkout_query.answer(ok=True)
 
 
