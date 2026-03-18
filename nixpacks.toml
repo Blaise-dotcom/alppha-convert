@@ -1,11 +1,5 @@
 [phases.setup]
 nixPkgs = ["python311", "ffmpeg", "nodejs_20", "git"]
 
-[phases.build]
-cmds = [
-  "git clone https://github.com/Brainicism/bgutil-ytdlp-pot-provider.git /app/bgutil-server",
-  "cd /app/bgutil-server/server && npm ci && npx tsc"
-]
-
 [start]
-cmd = "node /app/bgutil-server/server/build/main.js & python bot.py"
+cmd = "python bot.py"
