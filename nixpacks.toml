@@ -1,5 +1,5 @@
-[phases.setup]
-nixPkgs = ["python311", "ffmpeg", "nodejs_20", "git"]
-
-[start]
-cmd = "python bot.py"
+python-telegram-bot==21.3
+yt-dlp>=2025.3.1
+curl_cffi>=0.7.0
+psycopg2-binary
+httpx
