@@ -4,7 +4,7 @@ nixPkgs = ["python311", "ffmpeg", "nodejs_20", "git"]
 [phases.build]
 cmds = [
   "git clone --branch 1.2.1 https://github.com/Brainicism/bgutil-ytdlp-pot-provider.git /app/bgutil-server",
-  "cd /app/bgutil-server/server && npm install --legacy-peer-deps && npx tsc"
+  "cd /app/bgutil-server/server && npm install --legacy-peer-deps canvas && npx tsc"
 ]
 
 [start]
