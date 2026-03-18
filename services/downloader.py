@@ -1,263 +1,339 @@
-import os
-import asyncio
-import logging
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import ContextTypes, ConversationHandler
-from database import get_usage, increment_usage, is_premium, ensure_user
-from services.downloader import detect_platform, download_media, get_video_info
-from config import (
-    FREE_DOWNLOADS_PER_DAY,
-    FREE_MAX_FILE_SIZE_MB,
-    PREMIUM_MAX_FILE_SIZE_MB,
-)
+"""
+services/downloader.py
+— yt-dlp + bgutil POToken (YouTube) + RapidAPI fallback YouTube/TikTok/Instagram
+"""
+import yt_dlp, os, base64, logging, re, random, httpx, urllib.parse
+from yt_dlp.networking.impersonate import ImpersonateTarget
+from config import DOWNLOAD_PATH, PROXY_URL, COOKIES_YOUTUBE, COOKIES_INSTAGRAM, COOKIES_TIKTOK, RAPIDAPI_KEYS
 
 logger = logging.getLogger(__name__)
+os.makedirs(DOWNLOAD_PATH, exist_ok=True)
 
-WAITING_LINK    = 10
-WAITING_FORMAT  = 11
-WAITING_QUALITY = 12
+# ── Proxies ───────────────────────────────────────────────────────────────────
+_raw_proxies = os.environ.get("PROXY_URLS", PROXY_URL or "")
+PROXY_LIST = [p.strip() for p in _raw_proxies.split(",") if p.strip()]
+logger.info(f"Proxies: {len(PROXY_LIST)} | RapidAPI keys: {len(RAPIDAPI_KEYS)}")
 
+def _get_proxy():
+    return random.choice(PROXY_LIST) if PROXY_LIST else None
 
-def _clean(text: str) -> str:
-    """Supprime les caractères spéciaux pour éviter les erreurs Telegram."""
-    return "".join(c for c in text if c.isalnum() or c in " .,!?()+-")
+# ── RapidAPI key rotation ─────────────────────────────────────────────────────
+_rapi_idx = 0
+def _get_rapidapi_key():
+    global _rapi_idx
+    if not RAPIDAPI_KEYS:
+        return None
+    key = RAPIDAPI_KEYS[_rapi_idx % len(RAPIDAPI_KEYS)]
+    _rapi_idx += 1
+    return key
 
-
-async def start_download(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    user_id = query.from_user.id
-    ensure_user(user_id, query.from_user.username, query.from_user.first_name)
-
-    context.user_data.clear()
-
-    usage   = get_usage(user_id)
-    premium = is_premium(user_id)
-
-    if not premium and usage["downloads"] >= FREE_DOWNLOADS_PER_DAY:
-        await query.edit_message_text(
-            f"❌ Limite atteinte !\n\n"
-            f"Tu as utilisé tes {FREE_DOWNLOADS_PER_DAY} téléchargements gratuits aujourd'hui.\n"
-            "Le quota se renouvelle chaque jour à minuit.\n\n"
-            "💎 Passe en Premium pour un accès illimité !",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("💎 Voir les plans", callback_data="premium")],
-                [InlineKeyboardButton("⬅️ Retour",         callback_data="menu")],
-            ]),
-        )
-        return ConversationHandler.END
-
-    remaining = "illimité ♾️" if premium else f"{FREE_DOWNLOADS_PER_DAY - usage['downloads']} restant(s)"
-    max_size  = PREMIUM_MAX_FILE_SIZE_MB if premium else FREE_MAX_FILE_SIZE_MB
-
-    await query.edit_message_text(
-        "📥 Téléchargement de média\n\n"
-        "Envoie-moi le lien de la vidéo :\n\n"
-        "🔴 YouTube\n"
-        "📸 Instagram (posts, reels)\n"
-        "🎵 TikTok\n\n"
-        f"📊 Quota aujourd'hui : {remaining}\n"
-        f"📁 Taille max : {max_size}MB\n\n"
-        "Envoie /cancel pour annuler",
-    )
-    return WAITING_LINK
-
-
-async def handle_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    url      = update.message.text.strip()
-    platform = detect_platform(url)
-
-    if not platform:
-        await update.message.reply_text(
-            "❌ Lien non reconnu.\n\n"
-            "J'accepte les liens :\n"
-            "• youtube.com / youtu.be\n"
-            "• instagram.com\n"
-            "• tiktok.com\n\n"
-            "Essaie encore ou /cancel"
-        )
-        return WAITING_LINK
-
-    context.user_data["url"]      = url
-    context.user_data["platform"] = platform
-
-    emoji_map = {"youtube": "🔴", "instagram": "📸", "tiktok": "🎵"}
-    msg = await update.message.reply_text(f"{emoji_map[platform]} Analyse du lien en cours...")
-
-    if platform == "instagram":
-        await msg.edit_text(
-            "📸 Instagram\n\n"
-            "Nous travaillons sur cette option.\n\n"
-            "✅ YouTube et TikTok fonctionnent normalement.",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("⬅️ Retour au menu", callback_data="menu")],
-            ]),
-        )
-        return ConversationHandler.END
-
+# ── Cookies ───────────────────────────────────────────────────────────────────
+def _write_cookie(b64: str, filename: str):
+    if not b64:
+        return None
     try:
-        loop = asyncio.get_event_loop()
-        info = await loop.run_in_executor(None, get_video_info, url)
-        context.user_data["video_info"] = info
-
-        dur     = info["duration"]
-        dur_str = f"{int(dur)//60}:{int(dur)%60:02d}" if dur else "?"
-        title   = _clean(info["title"][:50])
-
-        await msg.edit_text(
-            f"✅ Vidéo trouvée !\n\n"
-            f"📌 {title}\n"
-            f"⏱ Durée : {dur_str}\n"
-            f"👤 {_clean(info['uploader'])}\n\n"
-            "Choisis le format :",
-            reply_markup=_format_keyboard(),
-        )
+        path = f"/tmp/{filename}"
+        with open(path, "wb") as f:
+            f.write(base64.b64decode(b64))
+        return path
     except Exception as e:
-        logger.warning(f"Impossible de lire les infos : {e}")
-        await msg.edit_text(
-            "⚠️ Infos non disponibles, je vais quand même essayer.\n\n"
-            "Choisis le format :",
-            reply_markup=_format_keyboard(),
-        )
+        logger.warning(f"Cookie write failed: {e}")
+        return None
 
-    return WAITING_FORMAT
+_cookie_paths = {
+    "youtube":   _write_cookie(COOKIES_YOUTUBE,   "yt_cookies.txt"),
+    "instagram": _write_cookie(COOKIES_INSTAGRAM, "ig_cookies.txt"),
+    "tiktok":    _write_cookie(COOKIES_TIKTOK,    "tt_cookies.txt"),
+}
 
-
-async def handle_format(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-
-    fmt = query.data.replace("fmt_", "")
-    context.user_data["format"] = fmt
-
-    if fmt == "mp3":
-        context.user_data["quality"] = "720"
-        await query.edit_message_text("⏳ Téléchargement MP3 en cours...\nCa peut prendre quelques secondes.")
-        await _do_download(query.message, context, query.from_user.id)
-        return ConversationHandler.END
-
-    await query.edit_message_text(
-        "🎬 Choisis la qualité vidéo :",
-        reply_markup=_quality_keyboard(),
-    )
-    return WAITING_QUALITY
-
-
-async def handle_quality(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-
-    quality = query.data.replace("qual_", "")
-    context.user_data["quality"] = quality
-
-    labels = {"1080": "1080p HD", "720": "720p", "480": "480p", "360": "360p"}
-    await query.edit_message_text(
-        f"⏳ Téléchargement en {labels.get(quality, quality)} en cours...\n"
-        "Ca peut prendre quelques secondes.",
-    )
-    await _do_download(query.message, context, query.from_user.id)
-    return ConversationHandler.END
-
-
-async def _do_download(message, context: ContextTypes.DEFAULT_TYPE, user_id: int):
-    url     = context.user_data.get("url", "")
-    fmt     = context.user_data.get("format", "mp4")
-    quality = context.user_data.get("quality", "720")
-    premium = is_premium(user_id)
-    max_mb  = PREMIUM_MAX_FILE_SIZE_MB if premium else FREE_MAX_FILE_SIZE_MB
-
+# ── URL Cleaning ──────────────────────────────────────────────────────────────
+def clean_url(url: str) -> str:
     try:
-        await message.get_bot().send_chat_action(
-            chat_id=message.chat_id,
-            action="upload_video" if fmt != "mp3" else "upload_voice"
-        )
+        url = url.strip()
+        parsed = urllib.parse.urlparse(url)
+        params = urllib.parse.parse_qs(parsed.query)
+        if "youtube.com" in parsed.netloc or "youtu.be" in parsed.netloc:
+            clean_params = {k: v for k, v in params.items() if k == "v"}
+            new_query = urllib.parse.urlencode(clean_params, doseq=True)
+            return parsed._replace(query=new_query).geturl()
+        if "tiktok.com" in parsed.netloc or "vm.tiktok" in parsed.netloc:
+            return parsed._replace(query="", fragment="").geturl()
     except Exception:
         pass
+    return url.strip()
 
+# ── Platform detection ────────────────────────────────────────────────────────
+def detect_platform(url: str) -> str | None:
+    u = url.lower()
+    if "youtube.com" in u or "youtu.be" in u: return "youtube"
+    if "instagram.com" in u:                  return "instagram"
+    if "tiktok.com" in u or "vm.tiktok" in u: return "tiktok"
+    return None
+
+def _extract_yt_id(url: str) -> str:
+    m = re.search(r"(?:v=|youtu\.be/)([A-Za-z0-9_-]{11})", url)
+    return m.group(1) if m else url
+
+def _save_stream(dl_url: str, title: str, ext: str) -> str:
+    safe = re.sub(r'[^\w\-]', '_', title)[:60]
+    path = os.path.join(DOWNLOAD_PATH, f"{safe}{ext}")
+    with httpx.stream("GET", dl_url, timeout=120, follow_redirects=True,
+                      headers={"User-Agent": "Mozilla/5.0"}) as r:
+        r.raise_for_status()
+        with open(path, "wb") as f:
+            for chunk in r.iter_bytes(8192):
+                f.write(chunk)
+    logger.info(f"Saved: {path}")
+    return path
+
+# ── yt-dlp opts YouTube avec bgutil POToken ───────────────────────────────────
+def _yt_opts(extra: dict = None) -> dict:
+    opts = {
+        "quiet": True,
+        "no_warnings": True,
+        "extractor_args": {
+            "youtube": {
+                "player_client": ["web"],
+                "po_token": ["web+$ytcfg.INNERTUBE_API_KEY"],
+            }
+        },
+    }
+    if _cookie_paths.get("youtube"):
+        opts["cookiefile"] = _cookie_paths["youtube"]
+    if extra:
+        opts.update(extra)
+    return opts
+
+# ── yt-dlp opts TikTok ────────────────────────────────────────────────────────
+def _tt_opts(extra: dict = None) -> dict:
+    opts = {"quiet": True, "no_warnings": True,
+            "impersonate": ImpersonateTarget("chrome")}
+    proxy = _get_proxy()
+    if proxy:
+        opts["proxy"] = proxy
+    if _cookie_paths.get("tiktok"):
+        opts["cookiefile"] = _cookie_paths["tiktok"]
+    if extra:
+        opts.update(extra)
+    return opts
+
+# ── yt-dlp opts Instagram ─────────────────────────────────────────────────────
+def _ig_opts(extra: dict = None) -> dict:
+    opts = {"quiet": True, "no_warnings": True,
+            "impersonate": ImpersonateTarget("chrome", "131")}
+    proxy = _get_proxy()
+    if proxy:
+        opts["proxy"] = proxy
+    if _cookie_paths.get("instagram"):
+        opts["cookiefile"] = _cookie_paths["instagram"]
+    if extra:
+        opts.update(extra)
+    return opts
+
+# ── RapidAPI helpers ──────────────────────────────────────────────────────────
+def _rapi_info(url: str, platform: str) -> dict | None:
+    key = _get_rapidapi_key()
+    if not key:
+        return None
     try:
-        loop = asyncio.get_event_loop()
-        file_path, title = await loop.run_in_executor(None, download_media, url, fmt, quality)
+        if platform == "youtube":
+            r = httpx.get("https://youtube-mp36.p.rapidapi.com/dl",
+                params={"id": _extract_yt_id(url)},
+                headers={"X-RapidAPI-Key": key, "X-RapidAPI-Host": "youtube-mp36.p.rapidapi.com"},
+                timeout=15)
+            if r.status_code == 200:
+                d = r.json()
+                return {"title": d.get("title", "YouTube"), "duration": int(d.get("duration", 0) or 0),
+                        "thumbnail": None, "uploader": "YouTube", "platform": "youtube"}
 
-        if not file_path or not os.path.exists(file_path):
-            await message.reply_text(
-                "❌ Téléchargement échoué.\n"
-                "La vidéo est peut-être privée ou le lien a expiré."
-            )
-            return
+        elif platform == "tiktok":
+            r = httpx.get("https://tiktok-scraper7.p.rapidapi.com/video/info",
+                params={"url": url, "hd": "1"},
+                headers={"X-RapidAPI-Key": key, "X-RapidAPI-Host": "tiktok-scraper7.p.rapidapi.com"},
+                timeout=15)
+            if r.status_code == 200:
+                d = r.json().get("data", {})
+                return {"title": d.get("title", "TikTok"), "duration": d.get("duration", 0),
+                        "thumbnail": d.get("cover"), "uploader": d.get("author", {}).get("nickname", "TikTok"),
+                        "platform": "tiktok"}
 
-        size_mb = os.path.getsize(file_path) / (1024 * 1024)
-
-        if size_mb > max_mb:
-            os.remove(file_path)
-            tip = "\n\n💎 Passe en Premium pour des fichiers jusqu'à 500MB !" if not premium else ""
-            await message.reply_text(
-                f"❌ Fichier trop lourd !\n\n"
-                f"Taille : {size_mb:.1f}MB\nLimite : {max_mb}MB{tip}"
-            )
-            return
-
-        try:
-            await message.get_bot().send_chat_action(
-                chat_id=message.chat_id,
-                action="upload_video" if fmt != "mp3" else "upload_voice"
-            )
-        except Exception:
-            pass
-
-        safe_title = _clean(title[:100])
-
-        with open(file_path, "rb") as f:
-            if fmt == "mp3":
-                await message.reply_audio(
-                    f,
-                    title=safe_title[:64],
-                    filename=f"{safe_title[:50]}.mp3",
-                    caption="Via Alpha Convert",
-                )
-            else:
-                await message.reply_video(
-                    f,
-                    caption=f"Via Alpha Convert",
-                    supports_streaming=True,
-                )
-
-        increment_usage(user_id, "downloads")
-        os.remove(file_path)
-
-        from handlers.menu import main_keyboard
-        await message.reply_text(
-            "✅ Téléchargement terminé !",
-            reply_markup=main_keyboard()
-        )
+        elif platform == "instagram":
+            r = httpx.get("https://instagram120.p.rapidapi.com/api/instagram/hls",
+                params={"url": url},
+                headers={"X-RapidAPI-Key": key, "X-RapidAPI-Host": "instagram120.p.rapidapi.com"},
+                timeout=15)
+            logger.info(f"Instagram120 hls info: {r.status_code} | {r.text[:200]}")
+            if r.status_code == 200:
+                return {"title": "Video Instagram", "duration": 0,
+                        "thumbnail": None, "uploader": "Instagram", "platform": "instagram"}
 
     except Exception as e:
-        logger.error(f"Erreur download : {e}")
-        try:
-            if 'file_path' in locals() and file_path and os.path.exists(file_path):
-                os.remove(file_path)
-        except Exception:
-            pass
-        from handlers.menu import main_keyboard
-        await message.reply_text(
-            "❌ Erreur lors du téléchargement.\n"
-            "Vérifie que la vidéo est publique et réessaie.",
-            reply_markup=main_keyboard()
-        )
+        logger.warning(f"RapidAPI info [{platform}]: {e}")
+    return None
 
 
-def _format_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton("🎬 MP4 (vidéo)", callback_data="fmt_mp4"),
-            InlineKeyboardButton("🎵 MP3 (audio)", callback_data="fmt_mp3"),
-        ]
-    ])
+def _rapi_download(url: str, platform: str, format_type: str) -> tuple[str | None, str]:
+    key = _get_rapidapi_key()
+    if not key:
+        return None, "media"
+    try:
+        if platform == "youtube" and format_type == "mp3":
+            r = httpx.get("https://youtube-mp36.p.rapidapi.com/dl",
+                params={"id": _extract_yt_id(url)},
+                headers={"X-RapidAPI-Key": key, "X-RapidAPI-Host": "youtube-mp36.p.rapidapi.com"},
+                timeout=30)
+            if r.status_code == 200:
+                d = r.json()
+                if d.get("link"):
+                    return _save_stream(d["link"], d.get("title", "audio"), ".mp3"), d.get("title", "audio")
+
+        elif platform == "youtube":
+            r = httpx.get("https://yt-api.p.rapidapi.com/dl",
+                params={"id": _extract_yt_id(url), "cgeo": "US"},
+                headers={"X-RapidAPI-Key": key, "X-RapidAPI-Host": "yt-api.p.rapidapi.com"},
+                timeout=30)
+            if r.status_code == 200:
+                d = r.json()
+                formats = d.get("adaptiveFormats", []) + d.get("formats", [])
+                mp4s = [f for f in formats if f.get("mimeType", "").startswith("video/mp4")]
+                if mp4s:
+                    best = sorted(mp4s, key=lambda x: x.get("height", 0), reverse=True)[0]
+                    if best.get("url"):
+                        return _save_stream(best["url"], d.get("title", "video"), ".mp4"), d.get("title", "video")
+
+        elif platform == "tiktok":
+            r = httpx.get("https://tiktok-scraper7.p.rapidapi.com/video/info",
+                params={"url": url, "hd": "1"},
+                headers={"X-RapidAPI-Key": key, "X-RapidAPI-Host": "tiktok-scraper7.p.rapidapi.com"},
+                timeout=30)
+            if r.status_code == 200:
+                d = r.json().get("data", {})
+                title = d.get("title", "tiktok")
+                dl_url = d.get("hdplay") or d.get("play") or d.get("wmplay")
+                if format_type == "mp3":
+                    dl_url = d.get("music_info", {}).get("play") or dl_url
+                if dl_url:
+                    ext = ".mp3" if format_type == "mp3" else ".mp4"
+                    return _save_stream(dl_url, title, ext), title
+
+        elif platform == "instagram":
+            r = httpx.get("https://instagram120.p.rapidapi.com/api/instagram/hls",
+                params={"url": url},
+                headers={"X-RapidAPI-Key": key, "X-RapidAPI-Host": "instagram120.p.rapidapi.com"},
+                timeout=30)
+            logger.info(f"Instagram120 hls dl: {r.status_code} | {r.text[:300]}")
+            if r.status_code == 200:
+                d = r.json()
+                def _find_video(obj):
+                    if isinstance(obj, dict):
+                        for k, v in obj.items():
+                            if k in ("video_url", "url", "src", "link") and isinstance(v, str) and "http" in v:
+                                return v
+                            if k == "video_versions" and isinstance(v, list) and v:
+                                return v[0].get("url")
+                            r2 = _find_video(v)
+                            if r2: return r2
+                    elif isinstance(obj, list):
+                        for item in obj:
+                            r2 = _find_video(item)
+                            if r2: return r2
+                    return None
+                video_url = _find_video(d)
+                if video_url:
+                    ext = ".mp3" if format_type == "mp3" else ".mp4"
+                    return _save_stream(video_url, "instagram_video", ext), "Instagram"
+
+    except Exception as e:
+        logger.error(f"RapidAPI download [{platform}]: {e}")
+    return None, "media"
 
 
-def _quality_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🔵 1080p HD",           callback_data="qual_1080")],
-        [InlineKeyboardButton("📺 720p",               callback_data="qual_720")],
-        [InlineKeyboardButton("📱 480p",               callback_data="qual_480")],
-        [InlineKeyboardButton("💨 360p (plus rapide)", callback_data="qual_360")],
-    ])
+# ── Public API ────────────────────────────────────────────────────────────────
+def get_video_info(url: str) -> dict:
+    url = clean_url(url)
+    platform = detect_platform(url)
+
+    if platform == "youtube":
+        opts = _yt_opts({"skip_download": True})
+    elif platform == "tiktok":
+        opts = _tt_opts({"skip_download": True})
+    else:
+        opts = _ig_opts({"skip_download": True})
+
+    try:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+        return {"title": info.get("title", "Vidéo"), "duration": info.get("duration", 0),
+                "thumbnail": info.get("thumbnail"), "uploader": info.get("uploader", ""),
+                "platform": platform}
+    except Exception as e:
+        logger.warning(f"yt-dlp info [{platform}] failed: {e} → RapidAPI")
+
+    result = _rapi_info(url, platform)
+    if result:
+        logger.info(f"RapidAPI info OK [{platform}]")
+        return result
+
+    raise RuntimeError(f"Impossible de récupérer les infos pour {url}")
+
+
+def download_media(url: str, format_type: str = "mp4", quality: str = "720") -> tuple[str | None, str]:
+    url = clean_url(url)
+    platform = detect_platform(url)
+    tpl = os.path.join(DOWNLOAD_PATH, "%(id)s_%(title).60s.%(ext)s")
+    logger.info(f"Download | platform={platform} | format={format_type} | quality={quality}")
+
+    if format_type == "mp3":
+        fmt_opts = {
+            "format": "bestaudio/best",
+            "postprocessors": [{"key": "FFmpegExtractAudio", "preferredcodec": "mp3", "preferredquality": "192"}],
+        }
+    else:
+        qmap = {
+            "1080": "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[height<=1080]/best",
+            "720":  "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[height<=720]/best",
+            "480":  "bestvideo[height<=480][ext=mp4]+bestaudio[ext=m4a]/best[height<=480]/best",
+            "360":  "bestvideo[height<=360][ext=mp4]+bestaudio[ext=m4a]/best[height<=360]/best",
+        }
+        fmt = "best[ext=mp4]/best" if platform == "instagram" else qmap.get(quality, qmap["720"])
+        fmt_opts = {"format": fmt, "merge_output_format": "mp4"}
+
+    extra = {"outtmpl": tpl, "quiet": False, "no_warnings": False, **fmt_opts}
+
+    if platform == "youtube":
+        opts = _yt_opts(extra)
+    elif platform == "tiktok":
+        opts = _tt_opts(extra)
+    else:
+        opts = _ig_opts(extra)
+
+    # Tentative yt-dlp
+    try:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+            title = info.get("title", "media")
+            path = ydl.prepare_filename(info)
+            base = re.sub(r'\.\w+$', '', path)
+            for ext in [".mp4", ".mp3", ".mkv", ".webm", ".m4a"]:
+                if os.path.exists(base + ext):
+                    logger.info(f"yt-dlp OK: {base + ext}")
+                    return base + ext, title
+            vid = info.get("id", "")
+            if vid:
+                for f in os.listdir(DOWNLOAD_PATH):
+                    if f.startswith(vid) and not f.endswith(('.part', '.ytdl')):
+                        full = os.path.join(DOWNLOAD_PATH, f)
+                        logger.info(f"yt-dlp OK (ID): {full}")
+                        return full, title
+    except Exception as e:
+        logger.warning(f"yt-dlp [{platform}] failed: {e} → RapidAPI")
+
+    # Fallback RapidAPI
+    logger.info(f"RapidAPI fallback [{platform}]")
+    path, title = _rapi_download(url, platform, format_type)
+    if path and os.path.exists(path):
+        logger.info(f"RapidAPI OK: {path}")
+        return path, title
+
+    logger.error(f"Echec total [{platform}] {url}")
+    return None, "media"
