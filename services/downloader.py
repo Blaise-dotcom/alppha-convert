@@ -86,20 +86,9 @@ def _save_stream(dl_url: str, title: str, ext: str) -> str:
     logger.info(f"Saved: {path}")
     return path
 
-# ── yt-dlp opts YouTube (android client — pas besoin de cookies ni POToken) ──
+# ── yt-dlp opts YouTube (simple, identique au site web qui fonctionne) ────────
 def _yt_opts(extra: dict = None, video_id: str = "") -> dict:
-    opts = {
-        "quiet": True,
-        "no_warnings": True,
-        "extractor_args": {
-            "youtube": {
-                "player_client": ["android", "web"],
-            }
-        },
-        "http_headers": {
-            "User-Agent": "com.google.android.youtube/19.09.37 (Linux; U; Android 11) gzip",
-        },
-    }
+    opts = {"quiet": True, "no_warnings": True}
     if _cookie_paths.get("youtube"):
         opts["cookiefile"] = _cookie_paths["youtube"]
     if extra:
@@ -292,13 +281,13 @@ def download_media(url: str, format_type: str = "mp4", quality: str = "720") -> 
         }
     else:
         qmap = {
-            "1080": "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[height<=1080]/best",
-            "720":  "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[height<=720]/best",
-            "480":  "bestvideo[height<=480][ext=mp4]+bestaudio[ext=m4a]/best[height<=480]/best",
-            "360":  "bestvideo[height<=360][ext=mp4]+bestaudio[ext=m4a]/best[height<=360]/best",
+            "1080": "best[height<=1080][ext=mp4]/best[height<=1080]/best",
+            "720":  "best[height<=720][ext=mp4]/best[height<=720]/best",
+            "480":  "best[height<=480][ext=mp4]/best[height<=480]/best",
+            "360":  "best[height<=360][ext=mp4]/best[height<=360]/best",
         }
         fmt = "best[ext=mp4]/best" if platform == "instagram" else qmap.get(quality, qmap["720"])
-        fmt_opts = {"format": fmt, "merge_output_format": "mp4"}
+        fmt_opts = {"format": fmt}
 
     extra = {"outtmpl": tpl, "quiet": False, "no_warnings": False, **fmt_opts}
 
