@@ -108,16 +108,26 @@ def _rapi_info(url: str, platform: str) -> dict | None:
                         "platform": "tiktok"}
 
         elif platform == "instagram":
-            r = httpx.get(
-                "https://instagram120.p.rapidapi.com/api/instagram/hls",
-                params={"url": url},
-                headers={"X-RapidAPI-Key": key, "X-RapidAPI-Host": "instagram120.p.rapidapi.com"},
-                timeout=15,
-            )
-            logger.info(f"Instagram120 hls info: {r.status_code} | {r.text[:200]}")
-            if r.status_code == 200:
-                return {"title": "Video Instagram", "duration": 0,
-                        "thumbnail": None, "uploader": "Instagram", "platform": "instagram"}
+            # Essai 1 : instagram-post-reels-stories-downloader-api
+            ig_apis = [
+                ("https://instagram-post-reels-stories-downloader-api.p.rapidapi.com/api",
+                 "instagram-post-reels-stories-downloader-api.p.rapidapi.com"),
+                ("https://instagram-reels-downloader-api.p.rapidapi.com/downloadReel",
+                 "instagram-reels-downloader-api.p.rapidapi.com"),
+            ]
+            for endpoint, host in ig_apis:
+                try:
+                    r = httpx.get(endpoint, params={"url": url},
+                                  headers={"X-RapidAPI-Key": key, "X-RapidAPI-Host": host}, timeout=15)
+                    logger.info(f"IG info [{host}]: {r.status_code} | {r.text[:100]}")
+                    if r.status_code == 200:
+                        d = r.json()
+                        items = d.get("result", d.get("media", []))
+                        thumb = next((m.get("thumb") or m.get("thumbnail") for m in items if "video" in m.get("type","")), None)
+                        return {"title": "Video Instagram", "duration": 0,
+                                "thumbnail": thumb, "uploader": "Instagram", "platform": "instagram"}
+                except Exception as ex:
+                    logger.warning(f"IG info [{host}]: {ex}")
 
     except Exception as e:
         logger.warning(f"RapidAPI info [{platform}]: {e}")
@@ -201,31 +211,32 @@ def _rapi_download(url: str, platform: str, format_type: str) -> tuple[str | Non
 
         # ── Instagram ─────────────────────────────────────────────────────────
         elif platform == "instagram":
-            r = httpx.post(
-                "https://instagram120.p.rapidapi.com/api/instagram/links",
-                json={"url": url},
-                headers={"X-RapidAPI-Key": key, "X-RapidAPI-Host": "instagram120.p.rapidapi.com",
-                         "Content-Type": "application/json"},
-                timeout=30,
-            )
-            logger.info(f"Instagram120 status: {r.status_code} | {r.text[:200]}")
-            if r.status_code == 200:
-                d = r.json()
-                links = d if isinstance(d, list) else d.get("links", d.get("data", []))
-                # Chercher le lien vidéo
-                video_url = None
-                for item in (links if isinstance(links, list) else [links]):
-                    href = item.get("link") or item.get("url") or item.get("href") or item.get("src")
-                    if href and ("mp4" in href.lower() or "video" in href.lower() or "cdn" in href.lower()):
-                        video_url = href
-                        break
-                if not video_url and isinstance(links, list) and links:
-                    # Prendre le premier lien disponible
-                    first = links[0]
-                    video_url = first.get("link") or first.get("url") or first.get("href") or first.get("src")
-                if video_url:
-                    ext = ".mp3" if format_type == "mp3" else ".mp4"
-                    return _save_stream(video_url, "instagram_video", ext), "Instagram"
+            ig_apis = [
+                ("https://instagram-post-reels-stories-downloader-api.p.rapidapi.com/api",
+                 "instagram-post-reels-stories-downloader-api.p.rapidapi.com"),
+                ("https://instagram-reels-downloader-api.p.rapidapi.com/downloadReel",
+                 "instagram-reels-downloader-api.p.rapidapi.com"),
+            ]
+            for endpoint, host in ig_apis:
+                try:
+                    r = httpx.get(endpoint, params={"url": url},
+                                  headers={"X-RapidAPI-Key": key, "X-RapidAPI-Host": host}, timeout=30)
+                    logger.info(f"IG dl [{host}]: {r.status_code} | {r.text[:200]}")
+                    if r.status_code == 200:
+                        d = r.json()
+                        items = d.get("result", d.get("media", []))
+                        video_url = None
+                        for item in items:
+                            if "video" in item.get("type", ""):
+                                video_url = item.get("url")
+                                break
+                        if not video_url and items:
+                            video_url = items[0].get("url")
+                        if video_url:
+                            ext = ".mp3" if format_type == "mp3" else ".mp4"
+                            return _save_stream(video_url, "instagram_video", ext), "Instagram"
+                except Exception as ex:
+                    logger.error(f"IG dl [{host}]: {ex}")
 
     except Exception as e:
         logger.error(f"RapidAPI download [{platform}]: {e}")
