@@ -108,14 +108,24 @@ def build_app() -> Application:
     return app
 
 
+def _clear_webhook(token: str):
+    import httpx as _httpx
+    base = f"https://api.telegram.org/bot{token}"
+    try:
+        _httpx.post(f"{base}/deleteWebhook", json={"drop_pending_updates": True}, timeout=10)
+        logger.info("deleteWebhook OK")
+    except Exception as e:
+        logger.warning(f"deleteWebhook failed: {e}")
+    time.sleep(3)
+
+
 def main():
     logger.info("🚀 Démarrage de Alpha Convert...")
-    logger.info("⏳ Attente de 5s pour éviter les conflits de polling...")
-    time.sleep(5)
+    _clear_webhook(BOT_TOKEN)
     init_db()
     app = build_app()
     logger.info("✅ Bot lancé — en attente de messages")
-    app.run_polling(allowed_updates=Update.ALL_TYPES)
+    app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
 
 
 if __name__ == "__main__":
