@@ -227,7 +227,15 @@ def get_video_info(url: str) -> dict:
         "quiet": True,
         "no_warnings": True,
         "skip_download": True,
-        "extractor_args": {"youtube": {"player_client": ["android", "web"]}},
+        # player_client web_creator et tv ne nécessitent pas de JS runtime
+        "extractor_args": {
+            "youtube": {
+                "player_client": ["web_creator", "tv"],
+                "skip": ["hls", "dash"],
+            }
+        },
+        # Désactive bgutil même s'il est installé (il cherche un serveur sur 127.0.0.1:4416 qui n'existe pas)
+        "po_token": None,
     }
     if _cookie_paths.get("youtube") and platform == "youtube":
         opts["cookiefile"] = _cookie_paths["youtube"]
@@ -264,7 +272,15 @@ def download_media(url: str, format_type: str = "mp4", quality: str = "720") -> 
         "outtmpl": tpl,
         "quiet": False,
         "no_warnings": False,
-        "extractor_args": {"youtube": {"player_client": ["android", "web"]}},
+        # web_creator et tv ne nécessitent pas de JS runtime ni bgutil
+        "extractor_args": {
+            "youtube": {
+                "player_client": ["web_creator", "tv"],
+                "skip": ["hls", "dash"],
+            }
+        },
+        # Désactive bgutil même s'il est installé dans l'env
+        "po_token": None,
     }
 
     if _cookie_paths.get("youtube") and platform == "youtube":
