@@ -25,17 +25,17 @@ FREE_MAX_FILE_SIZE_MB     = 50
 PREMIUM_MAX_FILE_SIZE_MB  = 500
 
 # ─── Prix Premium ─────────────────────────────────────────────────────────────
-# Stars
-STARS_PRICE_1MONTH  = 299
-STARS_PRICE_3MONTHS = 749
-STARS_PRICE_6MONTHS = 1349
-STARS_PRICE_1YEAR   = 2399
+# Stars (1 star = 0.015$, 1 mois = 2$)
+STARS_PRICE_1MONTH  = 134   # 2$
+STARS_PRICE_3MONTHS = 334   # 5$
+STARS_PRICE_6MONTHS = 600   # 9$
+STARS_PRICE_1YEAR   = 1067  # 16$
 
-# TON
+# TON (1 TON ≈ 1.33$)
 TON_PRICE_1MONTH  = 1.5
-TON_PRICE_3MONTHS = 3.5
-TON_PRICE_6MONTHS = 6.5
-TON_PRICE_1YEAR   = 12.0
+TON_PRICE_3MONTHS = 3.76
+TON_PRICE_6MONTHS = 6.77
+TON_PRICE_1YEAR   = 12.03
 
 # USDT
 USDT_PRICE_1MONTH  = 2
@@ -48,9 +48,9 @@ TON_WALLET   = os.getenv("TON_WALLET_ADDRESS", "TON_WALLET_ICI")
 USDT_WALLET  = os.getenv("USDT_WALLET_ADDRESS", "USDT_WALLET_ICI")
 
 # ─── Anciens (compatibilité) ──────────────────────────────────────────────────
-STARS_PRICE_WEEKLY  = 149
+STARS_PRICE_WEEKLY  = 67   # ~1$ / semaine
 STARS_PRICE_MONTHLY = STARS_PRICE_1MONTH
-TON_PRICE_WEEKLY    = 0.75
+TON_PRICE_WEEKLY    = 0.38
 TON_PRICE_MONTHLY   = TON_PRICE_1MONTH
 
 # ─── Chemins & formats ────────────────────────────────────────────────────────
